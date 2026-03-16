@@ -288,6 +288,7 @@ _GENERATION_CONFIG_TO_DEFAULT_FIELD: dict[str, str] = {
     "repetition_penalty": "default_repetition_penalty",
 }
 
+
 def _coerce_generation_config_float(value: object) -> float:
     """Coerce a generation-config value to a finite float.
 

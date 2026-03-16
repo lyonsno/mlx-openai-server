@@ -926,8 +926,7 @@ async def test_multimodal_generation_config_seeded_defaults_beat_env_for_omitted
         GENERATION_CONFIG_DEFAULTS["repetition_penalty"]
     )
     assert (
-        captured_requests[0].max_completion_tokens
-        == GENERATION_CONFIG_DEFAULTS["max_new_tokens"]
+        captured_requests[0].max_completion_tokens == GENERATION_CONFIG_DEFAULTS["max_new_tokens"]
     )
 
 
@@ -1019,7 +1018,9 @@ async def test_invalid_generation_config_keeps_env_fallback_available(
         float(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_P"])
     )
     assert captured_chat_requests[0].top_k == int(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_K"])
-    assert captured_chat_requests[0].min_p == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"]))
+    assert captured_chat_requests[0].min_p == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"])
+    )
     assert captured_chat_requests[0].repetition_penalty == pytest.approx(
         float(GLOBAL_ENV_DEFAULTS["DEFAULT_REPETITION_PENALTY"])
     )
@@ -1133,7 +1134,9 @@ async def test_non_utf8_generation_config_keeps_env_fallback_available(
         float(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_P"])
     )
     assert captured_chat_requests[0].top_k == int(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_K"])
-    assert captured_chat_requests[0].min_p == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"]))
+    assert captured_chat_requests[0].min_p == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"])
+    )
     assert captured_chat_requests[0].repetition_penalty == pytest.approx(
         float(GLOBAL_ENV_DEFAULTS["DEFAULT_REPETITION_PENALTY"])
     )
