@@ -292,6 +292,12 @@ def cli():
 @click.option("--top-k", default=20, type=int, help="Default top-k sampling parameter.")
 @click.option("--min-p", default=0.0, type=float, help="Default min-p sampling parameter.")
 @click.option(
+    "--repetition-penalty",
+    default=1.0,
+    type=float,
+    help="Default repetition penalty for token generation.",
+)
+@click.option(
     "--presence-penalty",
     default=0.0,
     type=float,
@@ -350,6 +356,7 @@ def launch(
     top_p,
     top_k,
     min_p,
+    repetition_penalty,
     presence_penalty,
     xtc_probability,
     xtc_threshold,
@@ -418,6 +425,7 @@ def launch(
         default_top_p=top_p,
         default_top_k=top_k,
         default_min_p=min_p,
+        default_repetition_penalty=repetition_penalty,
         default_presence_penalty=presence_penalty,
         default_xtc_probability=xtc_probability,
         default_xtc_threshold=xtc_threshold,

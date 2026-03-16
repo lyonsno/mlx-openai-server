@@ -30,7 +30,14 @@ import mlx.core as mx
 import uvicorn
 
 from .api.endpoints import router
-from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
+from .config import (
+    MLXServerConfig,
+    ModelEntryConfig,
+    MultiModelServerConfig,
+    has_missing_generation_config_defaults,
+    resolve_generation_config_model_dir,
+    seed_model_defaults_from_generation_config,
+)
 from .core.handler_process import HandlerProcessProxy
 from .core.model_registry import ModelRegistry
 from .handler import MLXFluxHandler
@@ -45,6 +52,9 @@ MFLUX_INSTALL_HINT = (
     "Install a compatible build separately, for example "
     "`pip install git+https://github.com/cubist38/mflux.git`."
 )
+
+_resolve_generation_config_model_dir = resolve_generation_config_model_dir
+_seed_model_defaults_from_generation_config = seed_model_defaults_from_generation_config
 
 
 def ensure_image_handler_available(model_type: str) -> None:
@@ -321,6 +331,11 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         is invalid for the given type.
     """
     model_path = model_cfg.model_path
+    if has_missing_generation_config_defaults(model_cfg):
+        _seed_model_defaults_from_generation_config(
+            model_cfg,
+            model_dir=_resolve_generation_config_model_dir(model_path),
+        )
 
     if model_cfg.model_type == "multimodal":
         return _attach_sampling_defaults(
@@ -550,7 +565,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
-    global app  # noqa: PLW0603
+    global app
 
     # Extract logging parameters (available on both config types)
     log_file = getattr(config_args, "log_file", None)
