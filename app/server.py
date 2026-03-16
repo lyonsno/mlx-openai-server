@@ -118,7 +118,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        print,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
@@ -538,10 +538,6 @@ def create_multi_lifespan(config: MultiModelServerConfig):
     return lifespan
 
 
-# App instance will be created during setup with the correct lifespan
-app = None
-
-
 def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvicorn.Config:
     """Create and configure the FastAPI app and return a Uvicorn config.
 
@@ -551,8 +547,6 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
 
     When ``config_args`` is a ``MultiModelServerConfig`` the multi-handler
     lifespan is used, which registers all models in a ``ModelRegistry``.
-
-    Note: This function mutates the module-level ``app`` global variable.
 
     Parameters
     ----------
@@ -565,8 +559,6 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
-    global app
-
     # Extract logging parameters (available on both config types)
     log_file = getattr(config_args, "log_file", None)
     no_log_file = getattr(config_args, "no_log_file", False)
@@ -586,17 +578,17 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         lifespan_fn = create_lifespan(config_args)
 
     # Create FastAPI app with the configured lifespan
-    app = FastAPI(
+    fastapi_app = FastAPI(
         title="OpenAI-compatible API",
         description="API for OpenAI-compatible chat completion and text embedding",
         version=__version__,
         lifespan=lifespan_fn,
     )
 
-    app.include_router(router)
+    fastapi_app.include_router(router)
 
     # Add CORS middleware
-    app.add_middleware(
+    fastapi_app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_credentials=True,
@@ -604,7 +596,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         allow_headers=["*"],
     )
 
-    @app.middleware("http")
+    @fastapi_app.middleware("http")
     async def add_process_time_header(request: Request, call_next):
         """Middleware to add processing time header and run cleanup.
 
@@ -633,7 +625,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
 
         return response
 
-    @app.exception_handler(Exception)
+    @fastapi_app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Global exception handler that logs and returns a 500 payload.
 
@@ -651,7 +643,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
     port = config_args.port
     logger.info(f"Starting server on {host}:{port}")
     return uvicorn.Config(
-        app=app,
+        app=fastapi_app,
         host=host,
         port=port,
         log_level=log_level.lower(),
