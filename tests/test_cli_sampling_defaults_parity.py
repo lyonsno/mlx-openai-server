@@ -116,3 +116,30 @@ def test_start_exports_repetition_penalty_before_server_setup(
     asyncio.run(main_module.start(config))
 
     assert captured_env["DEFAULT_REPETITION_PENALTY"] == "1.25"
+
+
+def test_launch_defaults_prompt_cache_size_to_ten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI should default ``--prompt-cache-size`` to 10."""
+
+    cli_module = _load_cli_module(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    async def _fake_start(config: Any) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr(cli_module, "start", _fake_start)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "launch",
+            "--model-path",
+            "dummy-model",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["config"].prompt_cache_size == 10

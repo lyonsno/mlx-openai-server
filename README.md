@@ -154,7 +154,7 @@ mlx-openai-server launch \
 | `--draft-model-path` | No | path | — | Path to draft model for speculative decoding |
 | `--num-draft-tokens` | No | int | 2 | Draft tokens per step |
 | | | | | **Prompt cache** (lm only) |
-| `--prompt-cache-size` | No | int | 100 | Maximum number of prompt KV cache entries to store |
+| `--prompt-cache-size` | No | int | 10 | Maximum number of prompt KV cache entries to store |
 | `--max-bytes` | No | int | (unbounded) | Maximum total bytes retained by prompt KV caches before eviction |
 | | | | | **Advanced options** |
 | `--lora-paths` | No | string | — | Comma-separated LoRA adapter paths (image models) |

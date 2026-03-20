@@ -255,7 +255,7 @@ def cli():
 )
 @click.option(
     "--prompt-cache-size",
-    default=100,
+    default=10,
     type=int,
     help="Maximum number of prompt KV cache entries to store. Only works with language models (lm). Default is 10.",
 )
