@@ -377,9 +377,9 @@ class HandlerProcessProxy:
 
         seeded_model_cfg = config_module.ModelEntryConfig(**model_cfg_dict)
         if config_module.should_attempt_generation_config_seeding(seeded_model_cfg):
-            config_module.seed_model_defaults_from_generation_config(
+            config_module.attempt_generation_config_seeding(
                 seeded_model_cfg,
-                model_dir=config_module.resolve_generation_config_model_dir(model_path),
+                resolver=config_module.resolve_generation_config_model_dir,
             )
         self._model_cfg_dict = seeded_model_cfg.__dict__.copy()
         for field_name in self._SAMPLING_DEFAULT_FIELDS:

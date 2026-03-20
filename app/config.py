@@ -475,6 +475,33 @@ def should_attempt_generation_config_seeding(model_cfg: ModelEntryConfig) -> boo
     )
 
 
+def attempt_generation_config_seeding(
+    model_cfg: ModelEntryConfig,
+    resolver: Callable[[str], Path | None] | None = None,
+) -> None:
+    """Best-effort seed defaults using a local dir or local-cache repo lookup.
+
+    Repo-id lookups count as attempted even when the local-cache-only resolver
+    misses so later startup phases do not repeat the same cold-cache warning
+    and filesystem work for the same model.
+    """
+
+    if not should_attempt_generation_config_seeding(model_cfg):
+        return
+
+    local_path = Path(model_cfg.model_path)
+    if local_path.is_dir():
+        _seed_model_defaults_from_generation_config(model_cfg, model_dir=local_path)
+        return
+
+    model_cfg.generation_config_seed_attempted = True
+    resolve_model_dir = resolver or _resolve_generation_config_model_dir
+    _seed_model_defaults_from_generation_config(
+        model_cfg,
+        model_dir=resolve_model_dir(model_cfg.model_path),
+    )
+
+
 def seed_model_defaults_from_generation_config(
     model_cfg: ModelEntryConfig,
     model_dir: Path | None = None,
@@ -551,11 +578,7 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
                 "Each model must have a unique model_id."
             )
             raise ValueError(msg)
-        if should_attempt_generation_config_seeding(model_cfg):
-            _seed_model_defaults_from_generation_config(
-                model_cfg,
-                model_dir=_resolve_generation_config_model_dir(model_cfg.model_path),
-            )
+        attempt_generation_config_seeding(model_cfg)
         seen_ids.add(model_cfg.model_id)
         model_entries.append(model_cfg)
 

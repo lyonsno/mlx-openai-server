@@ -34,6 +34,7 @@ from .config import (
     MLXServerConfig,
     ModelEntryConfig,
     MultiModelServerConfig,
+    attempt_generation_config_seeding,
     resolve_generation_config_model_dir,
     seed_model_defaults_from_generation_config,
     should_attempt_generation_config_seeding,
@@ -55,6 +56,7 @@ MFLUX_INSTALL_HINT = (
 
 _resolve_generation_config_model_dir = resolve_generation_config_model_dir
 _seed_model_defaults_from_generation_config = seed_model_defaults_from_generation_config
+_attempt_generation_config_seeding = attempt_generation_config_seeding
 
 
 def ensure_image_handler_available(model_type: str) -> None:
@@ -332,9 +334,9 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
     """
     model_path = model_cfg.model_path
     if should_attempt_generation_config_seeding(model_cfg):
-        _seed_model_defaults_from_generation_config(
+        _attempt_generation_config_seeding(
             model_cfg,
-            model_dir=_resolve_generation_config_model_dir(model_path),
+            resolver=_resolve_generation_config_model_dir,
         )
 
     if model_cfg.model_type == "multimodal":

@@ -522,20 +522,16 @@ def test_handler_process_proxy_seeds_repo_id_models_from_resolved_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Repo-id model paths should seed defaults on the proxy path too."""
+    """Unattempted repo-id configs should seed defaults on the proxy path."""
 
     snapshot_dir = tmp_path / "hf-snapshot-proxy"
     _write_model_dir(snapshot_dir, GENERATION_CONFIG_DEFAULTS)
 
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "models:\n"
-        "  - model_path: mlx-community/model-proxy-4bit\n"
-        "    model_type: lm\n"
-        "    model_id: model-proxy\n",
-        encoding="utf-8",
+    model_config = config_module.ModelEntryConfig(
+        model_path="mlx-community/model-proxy-4bit",
+        model_type="lm",
+        model_id="model-proxy",
     )
-    model_config = load_config_from_yaml(str(config_path)).models[0]
 
     monkeypatch.setattr(
         config_module,
@@ -566,20 +562,16 @@ def test_create_handler_from_config_seeds_repo_id_models_from_resolved_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Repo-id model paths should seed defaults through handler creation too."""
+    """Unattempted repo-id configs should seed defaults through handler creation."""
 
     snapshot_dir = tmp_path / "hf-snapshot"
     _write_model_dir(snapshot_dir, GENERATION_CONFIG_DEFAULTS)
 
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "models:\n"
-        "  - model_path: mlx-community/model-a-4bit\n"
-        "    model_type: lm\n"
-        "    model_id: model-a\n",
-        encoding="utf-8",
+    model_config = config_module.ModelEntryConfig(
+        model_path="mlx-community/model-a-4bit",
+        model_type="lm",
+        model_id="model-a",
     )
-    model_config = load_config_from_yaml(str(config_path)).models[0]
 
     server_module = _load_server_module(monkeypatch)
     monkeypatch.setattr(
@@ -898,6 +890,67 @@ def test_create_handler_from_config_does_not_reresolve_repo_snapshot_without_gen
     assert child_resolver_calls == []
     assert model_config.default_temperature is None
     assert handler.default_temperature is None
+
+
+def test_cold_cache_repo_id_only_attempts_generation_config_resolution_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold-cache repo ids should not repeat the same local-cache-only lookup."""
+
+    model_path = "mlx-community/model-cold-cache-4bit"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        f"  - model_path: {model_path}\n"
+        "    model_type: lm\n"
+        "    model_id: model-cold-cache\n",
+        encoding="utf-8",
+    )
+
+    resolver_calls: list[dict[str, Any]] = []
+
+    def _cold_cache_snapshot_download(**kwargs: Any) -> str:
+        resolver_calls.append(kwargs)
+        msg = (
+            "Cannot find an appropriate cached snapshot folder for the specified "
+            "revision on the local disk and outgoing traffic has been disabled."
+        )
+        raise FileNotFoundError(msg)
+
+    monkeypatch.setattr(config_module, "snapshot_download", _cold_cache_snapshot_download)
+
+    warning_messages: list[str] = []
+    sink_id = config_module.logger.add(
+        lambda message: warning_messages.append(str(message).rstrip()),
+        level="WARNING",
+        format="{message}",
+    )
+    try:
+        model_config = load_config_from_yaml(str(config_path)).models[0]
+        proxy = HandlerProcessProxy(
+            model_cfg_dict=model_config.__dict__.copy(),
+            model_type=model_config.model_type,
+            model_path=model_config.model_path,
+            model_id=model_config.model_id,
+        )
+        server_module = _load_server_module(monkeypatch)
+        handler = server_module.create_handler_from_config(model_config)
+    finally:
+        config_module.logger.remove(sink_id)
+
+    assert resolver_calls == [
+        {
+            "repo_id": model_path,
+            "allow_patterns": "generation_config.json",
+            "local_files_only": True,
+        }
+    ]
+    assert model_config.default_temperature is None
+    assert proxy.default_temperature is None
+    assert handler.default_temperature is None
+    model_warning_messages = [message for message in warning_messages if model_path in message]
+    assert len(model_warning_messages) == 1
 
 
 def test_handler_process_proxy_skips_repo_resolution_when_defaults_already_seeded(
