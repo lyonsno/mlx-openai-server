@@ -762,9 +762,7 @@ def test_create_handler_from_config_does_not_reresolve_partially_seeded_repo_def
         }
     ]
     assert handler_resolver_calls == []
-    assert handler.default_temperature == pytest.approx(
-        GENERATION_CONFIG_DEFAULTS["temperature"]
-    )
+    assert handler.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
     assert handler.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
     assert handler.default_top_k is None
 
