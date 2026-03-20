@@ -971,9 +971,7 @@ def test_cold_cache_repo_id_can_retry_later_startup_phases_but_warns_once(
     assert proxy_resolver_calls == [model_path]
     assert child_resolver_calls == [model_path]
     assert proxy.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
-    assert handler.default_temperature == pytest.approx(
-        GENERATION_CONFIG_DEFAULTS["temperature"]
-    )
+    assert handler.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
     model_warning_messages = [message for message in warning_messages if model_path in message]
     assert len(model_warning_messages) == 1
 

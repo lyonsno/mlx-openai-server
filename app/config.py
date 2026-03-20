@@ -218,9 +218,7 @@ class ModelEntryConfig:
     default_seed: int | None = None
     default_repetition_context_size: int | None = None
     generation_config_seed_attempted: bool = field(default=False, repr=False, compare=False)
-    generation_config_lookup_warning_emitted: bool = field(
-        default=False, repr=False, compare=False
-    )
+    generation_config_lookup_warning_emitted: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Resolve ``model_id`` and validate ``model_type``."""
