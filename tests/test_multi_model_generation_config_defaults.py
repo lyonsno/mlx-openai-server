@@ -601,6 +601,174 @@ def test_create_handler_from_config_seeds_repo_id_models_from_resolved_snapshot(
     )
 
 
+def test_load_config_from_yaml_seeds_repo_id_models_from_resolved_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repo-id model paths should seed defaults during YAML load too."""
+
+    snapshot_dir = tmp_path / "hf-snapshot-load"
+    _write_model_dir(snapshot_dir, GENERATION_CONFIG_DEFAULTS)
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        "  - model_path: mlx-community/model-load-4bit\n"
+        "    model_type: lm\n"
+        "    model_id: model-load\n",
+        encoding="utf-8",
+    )
+
+    resolver_calls: list[dict[str, Any]] = []
+
+    def _fake_snapshot_download(**kwargs: Any) -> str:
+        resolver_calls.append(kwargs)
+        return str(snapshot_dir)
+
+    monkeypatch.setattr(config_module, "snapshot_download", _fake_snapshot_download)
+
+    model_config = load_config_from_yaml(str(config_path)).models[0]
+
+    assert resolver_calls == [
+        {
+            "repo_id": "mlx-community/model-load-4bit",
+            "allow_patterns": "generation_config.json",
+            "local_files_only": True,
+        }
+    ]
+    assert model_config.default_temperature == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["temperature"]
+    )
+    assert model_config.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert model_config.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
+    assert model_config.default_min_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["min_p"])
+    assert model_config.default_repetition_penalty == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["repetition_penalty"]
+    )
+    assert model_config.default_max_tokens == GENERATION_CONFIG_DEFAULTS["max_new_tokens"]
+
+
+def test_handler_process_proxy_does_not_reresolve_partially_seeded_repo_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proxy construction should not repeat repo resolution after YAML-load seeding."""
+
+    snapshot_dir = tmp_path / "hf-snapshot-partial"
+    _write_model_dir(
+        snapshot_dir,
+        {
+            "temperature": GENERATION_CONFIG_DEFAULTS["temperature"],
+            "top_p": GENERATION_CONFIG_DEFAULTS["top_p"],
+        },
+    )
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        "  - model_path: mlx-community/model-partial-4bit\n"
+        "    model_type: lm\n"
+        "    model_id: model-partial\n",
+        encoding="utf-8",
+    )
+
+    resolver_calls: list[dict[str, Any]] = []
+
+    def _fake_snapshot_download(**kwargs: Any) -> str:
+        resolver_calls.append(kwargs)
+        return str(snapshot_dir)
+
+    monkeypatch.setattr(config_module, "snapshot_download", _fake_snapshot_download)
+
+    model_config = load_config_from_yaml(str(config_path)).models[0]
+    proxy = HandlerProcessProxy(
+        model_cfg_dict=model_config.__dict__.copy(),
+        model_type=model_config.model_type,
+        model_path=model_config.model_path,
+        model_id=model_config.model_id,
+    )
+
+    assert resolver_calls == [
+        {
+            "repo_id": "mlx-community/model-partial-4bit",
+            "allow_patterns": "generation_config.json",
+            "local_files_only": True,
+        }
+    ]
+    assert model_config.default_temperature == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["temperature"]
+    )
+    assert model_config.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert model_config.default_top_k is None
+    assert proxy.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
+    assert proxy.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert proxy.default_top_k is None
+
+
+def test_create_handler_from_config_does_not_reresolve_partially_seeded_repo_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Child handler creation should not repeat repo resolution after YAML-load seeding."""
+
+    snapshot_dir = tmp_path / "hf-snapshot-partial-child"
+    _write_model_dir(
+        snapshot_dir,
+        {
+            "temperature": GENERATION_CONFIG_DEFAULTS["temperature"],
+            "top_p": GENERATION_CONFIG_DEFAULTS["top_p"],
+        },
+    )
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        "  - model_path: mlx-community/model-partial-child-4bit\n"
+        "    model_type: lm\n"
+        "    model_id: model-partial-child\n",
+        encoding="utf-8",
+    )
+
+    loader_resolver_calls: list[dict[str, Any]] = []
+
+    def _fake_snapshot_download(**kwargs: Any) -> str:
+        loader_resolver_calls.append(kwargs)
+        return str(snapshot_dir)
+
+    monkeypatch.setattr(config_module, "snapshot_download", _fake_snapshot_download)
+
+    model_config = load_config_from_yaml(str(config_path)).models[0]
+    server_module = _load_server_module(monkeypatch)
+    handler_resolver_calls: list[str] = []
+
+    def _unexpected_reresolve(model_path: str) -> Path:
+        handler_resolver_calls.append(model_path)
+        return snapshot_dir
+
+    monkeypatch.setattr(
+        server_module,
+        "_resolve_generation_config_model_dir",
+        _unexpected_reresolve,
+        raising=False,
+    )
+
+    handler = server_module.create_handler_from_config(model_config)
+
+    assert loader_resolver_calls == [
+        {
+            "repo_id": "mlx-community/model-partial-child-4bit",
+            "allow_patterns": "generation_config.json",
+            "local_files_only": True,
+        }
+    ]
+    assert handler_resolver_calls == []
+    assert handler.default_temperature == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["temperature"]
+    )
+    assert handler.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert handler.default_top_k is None
+
+
 def test_handler_process_proxy_skips_repo_resolution_when_defaults_already_seeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -644,6 +812,88 @@ def test_handler_process_proxy_skips_repo_resolution_when_defaults_already_seede
         GENERATION_CONFIG_DEFAULTS["repetition_penalty"]
     )
     assert proxy.default_max_tokens == GENERATION_CONFIG_DEFAULTS["max_new_tokens"]
+
+
+def test_handler_process_proxy_preserves_debug_flag() -> None:
+    """Proxy construction should preserve the model ``debug`` flag."""
+
+    model_cfg_dict = {
+        "model_path": "mlx-community/model-debug-4bit",
+        "model_type": "lm",
+        "model_id": "model-debug",
+        "debug": True,
+    }
+
+    proxy = HandlerProcessProxy(
+        model_cfg_dict=model_cfg_dict,
+        model_type="lm",
+        model_path=model_cfg_dict["model_path"],
+        model_id=model_cfg_dict["model_id"],
+    )
+
+    assert getattr(proxy, "debug", None) is True
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_logs_debug_requests_for_proxy_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proxy-backed debug requests should emit chat request logging."""
+
+    endpoints_module = _load_endpoints_module()
+    proxy = HandlerProcessProxy(
+        model_cfg_dict={
+            "model_path": "mlx-community/model-debug-4bit",
+            "model_type": "lm",
+            "model_id": "model-debug",
+            "debug": True,
+            "default_temperature": GENERATION_CONFIG_DEFAULTS["temperature"],
+            "default_top_p": GENERATION_CONFIG_DEFAULTS["top_p"],
+            "default_top_k": GENERATION_CONFIG_DEFAULTS["top_k"],
+            "default_min_p": GENERATION_CONFIG_DEFAULTS["min_p"],
+            "default_repetition_penalty": GENERATION_CONFIG_DEFAULTS["repetition_penalty"],
+            "default_max_tokens": GENERATION_CONFIG_DEFAULTS["max_new_tokens"],
+        },
+        model_type="lm",
+        model_path="mlx-community/model-debug-4bit",
+        model_id="model-debug",
+    )
+    raw_request = _make_raw_request(_FakeRegistry({"model-debug": proxy}), handler=proxy)
+
+    logged_requests: list[dict[str, Any]] = []
+
+    def _fake_log_debug_server_request(**kwargs: Any) -> None:
+        logged_requests.append(kwargs)
+
+    async def _fake_process_text_request(
+        _handler: Any,
+        request: ChatCompletionRequest,
+        request_id: str | None = None,
+    ) -> JSONResponse:
+        del request_id
+        return JSONResponse(content={"model": request.model})
+
+    monkeypatch.setattr(
+        endpoints_module, "log_debug_server_request", _fake_log_debug_server_request
+    )
+    monkeypatch.setattr(endpoints_module, "process_text_request", _fake_process_text_request)
+
+    response = await endpoints_module.chat_completions(
+        ChatCompletionRequest(
+            model="model-debug",
+            messages=[Message(role="user", content="hello from debug logging")],
+        ),
+        raw_request,
+    )
+
+    assert isinstance(response, JSONResponse)
+    assert len(logged_requests) == 1
+    assert logged_requests[0]["route"] == "/v1/chat/completions"
+    assert logged_requests[0]["request_id"] == "req-test"
+    assert logged_requests[0]["request_payload"]["model"] == "model-debug"
+    assert logged_requests[0]["request_payload"]["messages"][0]["content"] == (
+        "hello from debug logging"
+    )
 
 
 def test_create_handler_from_config_skips_repo_resolution_for_non_text_models(

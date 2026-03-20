@@ -217,6 +217,7 @@ class ModelEntryConfig:
     default_xtc_threshold: float | None = None
     default_seed: int | None = None
     default_repetition_context_size: int | None = None
+    generation_config_seed_attempted: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Resolve ``model_id`` and validate ``model_type``."""
@@ -406,6 +407,9 @@ def _seed_model_defaults_from_generation_config(
         return
 
     generation_config_root = model_dir or Path(model_cfg.model_path)
+    if generation_config_root.exists():
+        model_cfg.generation_config_seed_attempted = True
+
     generation_config_path = generation_config_root / "generation_config.json"
     if not generation_config_path.exists():
         return
@@ -452,6 +456,22 @@ def has_missing_generation_config_defaults(model_cfg: ModelEntryConfig) -> bool:
     return any(
         getattr(model_cfg, target_field) is None
         for target_field in _GENERATION_CONFIG_TO_DEFAULT_FIELD.values()
+    )
+
+
+def should_attempt_generation_config_seeding(model_cfg: ModelEntryConfig) -> bool:
+    """Return whether generation-config seeding should still be attempted.
+
+    This is stricter than ``has_missing_generation_config_defaults`` because a
+    partially populated generation config can legitimately leave some mapped
+    defaults unset after seeding. Once a best-effort seeding attempt has
+    already happened for a text-capable model, startup should not repeat local
+    cache resolution for the same model.
+    """
+
+    return (
+        has_missing_generation_config_defaults(model_cfg)
+        and not model_cfg.generation_config_seed_attempted
     )
 
 
@@ -531,7 +551,11 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
                 "Each model must have a unique model_id."
             )
             raise ValueError(msg)
-        _seed_model_defaults_from_generation_config(model_cfg)
+        if should_attempt_generation_config_seeding(model_cfg):
+            _seed_model_defaults_from_generation_config(
+                model_cfg,
+                model_dir=_resolve_generation_config_model_dir(model_cfg.model_path),
+            )
         seen_ids.add(model_cfg.model_id)
         model_entries.append(model_cfg)
 

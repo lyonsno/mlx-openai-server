@@ -34,9 +34,9 @@ from .config import (
     MLXServerConfig,
     ModelEntryConfig,
     MultiModelServerConfig,
-    has_missing_generation_config_defaults,
     resolve_generation_config_model_dir,
     seed_model_defaults_from_generation_config,
+    should_attempt_generation_config_seeding,
 )
 from .core.handler_process import HandlerProcessProxy
 from .core.model_registry import ModelRegistry
@@ -331,7 +331,7 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         is invalid for the given type.
     """
     model_path = model_cfg.model_path
-    if has_missing_generation_config_defaults(model_cfg):
+    if should_attempt_generation_config_seeding(model_cfg):
         _seed_model_defaults_from_generation_config(
             model_cfg,
             model_dir=_resolve_generation_config_model_dir(model_path),

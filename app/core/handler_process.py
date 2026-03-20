@@ -376,7 +376,7 @@ class HandlerProcessProxy:
         self.model_created: int = 0
 
         seeded_model_cfg = config_module.ModelEntryConfig(**model_cfg_dict)
-        if config_module.has_missing_generation_config_defaults(seeded_model_cfg):
+        if config_module.should_attempt_generation_config_seeding(seeded_model_cfg):
             config_module.seed_model_defaults_from_generation_config(
                 seeded_model_cfg,
                 model_dir=config_module.resolve_generation_config_model_dir(model_path),
@@ -384,6 +384,7 @@ class HandlerProcessProxy:
         self._model_cfg_dict = seeded_model_cfg.__dict__.copy()
         for field_name in self._SAMPLING_DEFAULT_FIELDS:
             setattr(self, field_name, self._model_cfg_dict.get(field_name))
+        self.debug = bool(self._model_cfg_dict.get("debug", False))
         self._uses_model_sampling_defaults = True
 
         # Use the ``spawn`` start method for clean Metal runtime isolation.

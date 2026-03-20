@@ -778,23 +778,3 @@ Built on top of:
 ---
 
 [![GitHub stars](https://img.shields.io/github/stars/cubist38/mlx-openai-server?style=social&label=Star)](https://github.com/cubist38/mlx-openai-server)
-WXSOPZ5H4)
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-Built on top of:
-- [MLX](https://github.com/ml-explore/mlx) - Apple's ML framework
-- [mlx-lm](https://github.com/ml-explore/mlx-lm) - Language models
-- [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) - Multimodal models
-- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) - Embeddings
-- [mflux](https://github.com/filipstrand/mflux) - Flux image models
-- [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) - Audio transcription
-- [mlx-community](https://huggingface.co/mlx-community) - Model repository
-
----
-
-[![GitHub stars](https://img.shields.io/github/stars/cubist38/mlx-openai-server?style=social&label=Star)](https://github.com/cubist38/mlx-openai-server)
