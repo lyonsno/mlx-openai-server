@@ -759,19 +759,22 @@ def test_create_handler_from_config_does_not_reresolve_partially_seeded_repo_def
     assert handler.default_top_k is None
 
 
-def test_repo_snapshot_without_generation_config_is_only_resolved_once(
+def test_repo_snapshot_without_generation_config_can_seed_later_on_proxy_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Absent cached generation config should not trigger later re-resolution."""
+    """A prior absent file should not block later proxy-side pickup."""
 
-    snapshot_dir = tmp_path / "hf-snapshot-no-generation-config"
-    snapshot_dir.mkdir()
+    initial_snapshot_dir = tmp_path / "hf-snapshot-no-generation-config"
+    initial_snapshot_dir.mkdir()
+    later_snapshot_dir = tmp_path / "hf-snapshot-no-generation-config-later"
+    _write_model_dir(later_snapshot_dir, GENERATION_CONFIG_DEFAULTS)
 
+    model_path = "mlx-community/model-no-generation-config-4bit"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "models:\n"
-        "  - model_path: mlx-community/model-no-generation-config-4bit\n"
+        f"  - model_path: {model_path}\n"
         "    model_type: lm\n"
         "    model_id: model-no-generation-config\n",
         encoding="utf-8",
@@ -781,22 +784,23 @@ def test_repo_snapshot_without_generation_config_is_only_resolved_once(
 
     def _fake_snapshot_download(**kwargs: Any) -> str:
         loader_resolver_calls.append(kwargs)
-        return str(snapshot_dir)
+        return str(initial_snapshot_dir)
 
     monkeypatch.setattr(config_module, "snapshot_download", _fake_snapshot_download)
 
     model_config = load_config_from_yaml(str(config_path)).models[0]
+    assert model_config.default_temperature is None
 
     proxy_resolver_calls: list[str] = []
 
-    def _unexpected_proxy_reresolve(model_path: str) -> Path:
-        proxy_resolver_calls.append(model_path)
-        return snapshot_dir
+    def _proxy_retry_resolver(resolved_model_path: str) -> Path:
+        proxy_resolver_calls.append(resolved_model_path)
+        return later_snapshot_dir
 
     monkeypatch.setattr(
         config_module,
         "_resolve_generation_config_model_dir",
-        _unexpected_proxy_reresolve,
+        _proxy_retry_resolver,
         raising=False,
     )
 
@@ -807,49 +811,35 @@ def test_repo_snapshot_without_generation_config_is_only_resolved_once(
         model_id=model_config.model_id,
     )
 
-    server_module = _load_server_module(monkeypatch)
-    child_resolver_calls: list[str] = []
-
-    def _unexpected_child_reresolve(model_path: str) -> Path:
-        child_resolver_calls.append(model_path)
-        return snapshot_dir
-
-    monkeypatch.setattr(
-        server_module,
-        "_resolve_generation_config_model_dir",
-        _unexpected_child_reresolve,
-        raising=False,
-    )
-
-    handler = server_module.create_handler_from_config(model_config)
-
     assert loader_resolver_calls == [
         {
-            "repo_id": "mlx-community/model-no-generation-config-4bit",
+            "repo_id": model_path,
             "allow_patterns": "generation_config.json",
             "local_files_only": True,
         }
     ]
-    assert proxy_resolver_calls == []
-    assert child_resolver_calls == []
-    assert model_config.default_temperature is None
-    assert proxy.default_temperature is None
-    assert handler.default_temperature is None
+    assert proxy_resolver_calls == [model_path]
+    assert proxy.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
+    assert proxy.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert proxy.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
 
 
-def test_create_handler_from_config_does_not_reresolve_repo_snapshot_without_generation_config(
+def test_create_handler_from_config_can_seed_later_after_snapshot_without_generation_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Child handler creation should not re-resolve a repo lacking generation config."""
+    """A prior absent file should not block later child-side pickup."""
 
-    snapshot_dir = tmp_path / "hf-snapshot-no-generation-config-child"
-    snapshot_dir.mkdir()
+    initial_snapshot_dir = tmp_path / "hf-snapshot-no-generation-config-child"
+    initial_snapshot_dir.mkdir()
+    later_snapshot_dir = tmp_path / "hf-snapshot-no-generation-config-child-later"
+    _write_model_dir(later_snapshot_dir, GENERATION_CONFIG_DEFAULTS)
 
+    model_path = "mlx-community/model-no-generation-config-child-4bit"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "models:\n"
-        "  - model_path: mlx-community/model-no-generation-config-child-4bit\n"
+        f"  - model_path: {model_path}\n"
         "    model_type: lm\n"
         "    model_id: model-no-generation-config-child\n",
         encoding="utf-8",
@@ -859,22 +849,23 @@ def test_create_handler_from_config_does_not_reresolve_repo_snapshot_without_gen
 
     def _fake_snapshot_download(**kwargs: Any) -> str:
         loader_resolver_calls.append(kwargs)
-        return str(snapshot_dir)
+        return str(initial_snapshot_dir)
 
     monkeypatch.setattr(config_module, "snapshot_download", _fake_snapshot_download)
 
     model_config = load_config_from_yaml(str(config_path)).models[0]
+    assert model_config.default_temperature is None
     server_module = _load_server_module(monkeypatch)
     child_resolver_calls: list[str] = []
 
-    def _unexpected_child_reresolve(model_path: str) -> Path:
-        child_resolver_calls.append(model_path)
-        return snapshot_dir
+    def _child_retry_resolver(resolved_model_path: str) -> Path:
+        child_resolver_calls.append(resolved_model_path)
+        return later_snapshot_dir
 
     monkeypatch.setattr(
         server_module,
         "_resolve_generation_config_model_dir",
-        _unexpected_child_reresolve,
+        _child_retry_resolver,
         raising=False,
     )
 
@@ -882,23 +873,27 @@ def test_create_handler_from_config_does_not_reresolve_repo_snapshot_without_gen
 
     assert loader_resolver_calls == [
         {
-            "repo_id": "mlx-community/model-no-generation-config-child-4bit",
+            "repo_id": model_path,
             "allow_patterns": "generation_config.json",
             "local_files_only": True,
         }
     ]
-    assert child_resolver_calls == []
-    assert model_config.default_temperature is None
-    assert handler.default_temperature is None
+    assert child_resolver_calls == [model_path]
+    assert handler.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
+    assert handler.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert handler.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
 
 
-def test_cold_cache_repo_id_only_attempts_generation_config_resolution_once(
+def test_cold_cache_repo_id_can_retry_later_startup_phases_but_warns_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Cold-cache repo ids should not repeat the same local-cache-only lookup."""
+    """Cold-cache misses may retry later, but startup should not spam warnings."""
 
     model_path = "mlx-community/model-cold-cache-4bit"
+    later_snapshot_dir = tmp_path / "hf-snapshot-cold-cache-later"
+    _write_model_dir(later_snapshot_dir, GENERATION_CONFIG_DEFAULTS)
+
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "models:\n"
@@ -928,6 +923,21 @@ def test_cold_cache_repo_id_only_attempts_generation_config_resolution_once(
     )
     try:
         model_config = load_config_from_yaml(str(config_path)).models[0]
+        assert model_config.default_temperature is None
+
+        proxy_resolver_calls: list[str] = []
+
+        def _proxy_retry_resolver(resolved_model_path: str) -> Path:
+            proxy_resolver_calls.append(resolved_model_path)
+            return later_snapshot_dir
+
+        monkeypatch.setattr(
+            config_module,
+            "_resolve_generation_config_model_dir",
+            _proxy_retry_resolver,
+            raising=False,
+        )
+
         proxy = HandlerProcessProxy(
             model_cfg_dict=model_config.__dict__.copy(),
             model_type=model_config.model_type,
@@ -935,6 +945,18 @@ def test_cold_cache_repo_id_only_attempts_generation_config_resolution_once(
             model_id=model_config.model_id,
         )
         server_module = _load_server_module(monkeypatch)
+        child_resolver_calls: list[str] = []
+
+        def _child_retry_resolver(resolved_model_path: str) -> Path:
+            child_resolver_calls.append(resolved_model_path)
+            return later_snapshot_dir
+
+        monkeypatch.setattr(
+            server_module,
+            "_resolve_generation_config_model_dir",
+            _child_retry_resolver,
+            raising=False,
+        )
         handler = server_module.create_handler_from_config(model_config)
     finally:
         config_module.logger.remove(sink_id)
@@ -946,9 +968,12 @@ def test_cold_cache_repo_id_only_attempts_generation_config_resolution_once(
             "local_files_only": True,
         }
     ]
-    assert model_config.default_temperature is None
-    assert proxy.default_temperature is None
-    assert handler.default_temperature is None
+    assert proxy_resolver_calls == [model_path]
+    assert child_resolver_calls == [model_path]
+    assert proxy.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
+    assert handler.default_temperature == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["temperature"]
+    )
     model_warning_messages = [message for message in warning_messages if model_path in message]
     assert len(model_warning_messages) == 1
 

@@ -218,6 +218,9 @@ class ModelEntryConfig:
     default_seed: int | None = None
     default_repetition_context_size: int | None = None
     generation_config_seed_attempted: bool = field(default=False, repr=False, compare=False)
+    generation_config_lookup_warning_emitted: bool = field(
+        default=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Resolve ``model_id`` and validate ``model_type``."""
@@ -376,10 +379,7 @@ def _resolve_generation_config_model_dir(model_path: str) -> Path | None:
             allow_patterns="generation_config.json",
             local_files_only=True,
         )
-    except Exception as exc:
-        logger.warning(
-            f"Failed to resolve generation config snapshot for model '{model_path}': {exc}"
-        )
+    except Exception:
         return None
 
     return Path(snapshot_dir)
@@ -407,12 +407,10 @@ def _seed_model_defaults_from_generation_config(
         return
 
     generation_config_root = model_dir or Path(model_cfg.model_path)
-    if generation_config_root.exists():
-        model_cfg.generation_config_seed_attempted = True
-
     generation_config_path = generation_config_root / "generation_config.json"
     if not generation_config_path.exists():
         return
+    model_cfg.generation_config_seed_attempted = True
 
     try:
         generation_config = json.loads(generation_config_path.read_text(encoding="utf-8"))
@@ -481,9 +479,10 @@ def attempt_generation_config_seeding(
 ) -> None:
     """Best-effort seed defaults using a local dir or local-cache repo lookup.
 
-    Repo-id lookups count as attempted even when the local-cache-only resolver
-    misses so later startup phases do not repeat the same cold-cache warning
-    and filesystem work for the same model.
+    Repo-id lookups may retry across startup phases if the local-cache-only
+    resolver misses or if a resolved snapshot does not yet contain a
+    ``generation_config.json``. Warning emission for unresolved repo lookups is
+    deduped per model during a startup by ``generation_config_lookup_warning_emitted``.
     """
 
     if not should_attempt_generation_config_seeding(model_cfg):
@@ -494,11 +493,22 @@ def attempt_generation_config_seeding(
         _seed_model_defaults_from_generation_config(model_cfg, model_dir=local_path)
         return
 
-    model_cfg.generation_config_seed_attempted = True
     resolve_model_dir = resolver or _resolve_generation_config_model_dir
+    resolved_model_dir = resolve_model_dir(model_cfg.model_path)
+    if resolved_model_dir is None:
+        if not model_cfg.generation_config_lookup_warning_emitted:
+            logger.warning(
+                f"Failed to resolve generation config snapshot for model "
+                f"'{model_cfg.model_path}' from the local cache. "
+                "Generation-config seeding will be retried later in startup "
+                "if a source becomes available."
+            )
+            model_cfg.generation_config_lookup_warning_emitted = True
+        return
+
     _seed_model_defaults_from_generation_config(
         model_cfg,
-        model_dir=resolve_model_dir(model_cfg.model_path),
+        model_dir=resolved_model_dir,
     )
 
 
