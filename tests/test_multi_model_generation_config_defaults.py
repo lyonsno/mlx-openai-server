@@ -1045,6 +1045,45 @@ def test_cold_cache_repo_id_can_retry_later_startup_phases_but_warns_once(
     assert len(model_warning_messages) == 1
 
 
+def test_generation_config_cache_miss_warning_scopes_retry_to_preinitialize_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold-cache warnings should not imply post-initialize pickup this startup."""
+
+    model_cfg = config_module.ModelEntryConfig(
+        model_path="mlx-community/model-warning-scope-4bit",
+        model_type="lm",
+        model_id="model-warning-scope",
+    )
+
+    def _cold_cache_snapshot_download(**_kwargs: Any) -> str:
+        msg = (
+            "Cannot find an appropriate cached snapshot folder for the specified "
+            "revision on the local disk and outgoing traffic has been disabled."
+        )
+        raise FileNotFoundError(msg)
+
+    monkeypatch.setattr(config_module, "snapshot_download", _cold_cache_snapshot_download)
+
+    warning_messages: list[str] = []
+    sink_id = config_module.logger.add(
+        lambda message: warning_messages.append(str(message).rstrip()),
+        level="WARNING",
+        format="{message}",
+    )
+    try:
+        config_module.attempt_generation_config_seeding(model_cfg)
+    finally:
+        config_module.logger.remove(sink_id)
+
+    model_warning_messages = [
+        message for message in warning_messages if model_cfg.model_path in message
+    ]
+    assert len(model_warning_messages) == 1
+    assert "before handler initialization" in model_warning_messages[0]
+    assert "later in startup if a source becomes available" not in model_warning_messages[0]
+
+
 def test_handler_process_proxy_skips_repo_resolution_when_defaults_already_seeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

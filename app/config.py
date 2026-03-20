@@ -502,8 +502,8 @@ def attempt_generation_config_seeding(
             logger.warning(
                 f"Failed to resolve generation config snapshot for model "
                 f"'{model_cfg.model_path}' from the local cache. "
-                "Generation-config seeding will be retried later in startup "
-                "if a source becomes available."
+                "Generation-config seeding may be retried before handler "
+                "initialization if a source becomes available."
             )
             model_cfg.generation_config_lookup_warning_emitted = True
         return
