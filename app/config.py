@@ -398,7 +398,9 @@ def _seed_model_defaults_from_generation_config(
     Explicit YAML defaults remain authoritative; this helper only fills
     fields that are still ``None`` on the ``ModelEntryConfig``.
     Missing or malformed generation-config files are tolerated so
-    request-time env fallback remains available.
+    request-time env fallback remains available. Parse failures are
+    intentionally retryable later in startup in case the file becomes
+    valid before proxy or child handler construction.
     """
 
     if model_cfg.model_type not in {"lm", "multimodal"}:
@@ -408,7 +410,6 @@ def _seed_model_defaults_from_generation_config(
     generation_config_path = generation_config_root / "generation_config.json"
     if not generation_config_path.exists():
         return
-    model_cfg.generation_config_seed_attempted = True
 
     try:
         generation_config = json.loads(generation_config_path.read_text(encoding="utf-8"))
@@ -425,6 +426,8 @@ def _seed_model_defaults_from_generation_config(
             "because it is not a JSON object."
         )
         return
+
+    model_cfg.generation_config_seed_attempted = True
 
     for source_key, target_field in _GENERATION_CONFIG_TO_DEFAULT_FIELD.items():
         if getattr(model_cfg, target_field) is not None:
@@ -460,9 +463,10 @@ def should_attempt_generation_config_seeding(model_cfg: ModelEntryConfig) -> boo
 
     This is stricter than ``has_missing_generation_config_defaults`` because a
     partially populated generation config can legitimately leave some mapped
-    defaults unset after seeding. Once a best-effort seeding attempt has
-    already happened for a text-capable model, startup should not repeat local
-    cache resolution for the same model.
+    defaults unset after seeding. Once a valid generation-config object has
+    been read for a text-capable model, startup should not repeat the same
+    seeding work. Earlier misses, absent files, or parse failures may still be
+    retried later in startup.
     """
 
     return (

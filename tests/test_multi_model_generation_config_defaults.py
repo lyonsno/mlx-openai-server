@@ -884,6 +884,77 @@ def test_create_handler_from_config_can_seed_later_after_snapshot_without_genera
     assert handler.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
 
 
+def test_malformed_generation_config_can_seed_later_on_proxy_path(
+    tmp_path: Path,
+) -> None:
+    """An early parse failure should not block later proxy-side pickup."""
+
+    model_dir = tmp_path / "model-malformed-proxy"
+    model_dir.mkdir()
+    generation_config_path = model_dir / "generation_config.json"
+    generation_config_path.write_text("{not-json", encoding="utf-8")
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"models:\n  - model_path: {model_dir}\n    model_type: lm\n    model_id: model-malformed-proxy\n",
+        encoding="utf-8",
+    )
+
+    model_config = load_config_from_yaml(str(config_path)).models[0]
+    assert model_config.default_temperature is None
+
+    generation_config_path.write_text(
+        json.dumps(GENERATION_CONFIG_DEFAULTS),
+        encoding="utf-8",
+    )
+
+    proxy = HandlerProcessProxy(
+        model_cfg_dict=model_config.__dict__.copy(),
+        model_type=model_config.model_type,
+        model_path=model_config.model_path,
+        model_id=model_config.model_id,
+    )
+
+    assert proxy.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
+    assert proxy.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert proxy.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
+
+
+def test_create_handler_from_config_can_seed_later_after_malformed_generation_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An early parse failure should not block later child-side pickup."""
+
+    model_dir = tmp_path / "model-malformed-child"
+    model_dir.mkdir()
+    generation_config_path = model_dir / "generation_config.json"
+    generation_config_path.write_text("{not-json", encoding="utf-8")
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"models:\n  - model_path: {model_dir}\n    model_type: lm\n    model_id: model-malformed-child\n",
+        encoding="utf-8",
+    )
+
+    model_config = load_config_from_yaml(str(config_path)).models[0]
+    assert model_config.default_temperature is None
+
+    generation_config_path.write_text(
+        json.dumps(GENERATION_CONFIG_DEFAULTS),
+        encoding="utf-8",
+    )
+
+    server_module = _load_server_module(monkeypatch)
+    handler = server_module.create_handler_from_config(model_config)
+
+    assert handler.default_temperature == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["temperature"]
+    )
+    assert handler.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert handler.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
+
+
 def test_cold_cache_repo_id_can_retry_later_startup_phases_but_warns_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
