@@ -948,9 +948,7 @@ def test_create_handler_from_config_can_seed_later_after_malformed_generation_co
     server_module = _load_server_module(monkeypatch)
     handler = server_module.create_handler_from_config(model_config)
 
-    assert handler.default_temperature == pytest.approx(
-        GENERATION_CONFIG_DEFAULTS["temperature"]
-    )
+    assert handler.default_temperature == pytest.approx(GENERATION_CONFIG_DEFAULTS["temperature"])
     assert handler.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
     assert handler.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
 
