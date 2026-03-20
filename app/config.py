@@ -357,7 +357,10 @@ def _resolve_generation_config_model_dir(model_path: str) -> Path | None:
     Local filesystem directories are returned directly. Hugging Face repo IDs
     are resolved best-effort from the local Hugging Face cache only so
     generation-config seeding does not introduce network/download work on the
-    main startup path.
+    main startup path. When a cached repo snapshot resolves successfully, the
+    snapshot directory is returned even if it does not contain a
+    ``generation_config.json`` so callers can remember that the best-effort
+    lookup already happened.
     """
 
     local_path = Path(model_path)
@@ -379,10 +382,7 @@ def _resolve_generation_config_model_dir(model_path: str) -> Path | None:
         )
         return None
 
-    resolved_path = Path(snapshot_dir)
-    if (resolved_path / "generation_config.json").exists():
-        return resolved_path
-    return None
+    return Path(snapshot_dir)
 
 
 def resolve_generation_config_model_dir(model_path: str) -> Path | None:
