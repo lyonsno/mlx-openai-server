@@ -164,7 +164,11 @@ VALID_MODEL_TYPES = frozenset(
     {"lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"}
 )
 RUNTIME_ONLY_MODEL_ENTRY_FIELDS = frozenset(
-    {"generation_config_seed_attempted", "generation_config_lookup_warning_emitted"}
+    {
+        "generation_config_seed_attempted",
+        "generation_config_lookup_warning_emitted",
+        "generation_config_content_warning_emitted",
+    }
 )
 
 
@@ -224,6 +228,9 @@ class ModelEntryConfig:
     # startup seeding code and are intentionally ignored when loading YAML.
     generation_config_seed_attempted: bool = field(default=False, repr=False, compare=False)
     generation_config_lookup_warning_emitted: bool = field(default=False, repr=False, compare=False)
+    generation_config_content_warning_emitted: bool = field(
+        default=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Resolve ``model_id`` and validate ``model_type``."""
@@ -446,17 +453,21 @@ def _seed_model_defaults_from_generation_config(
     try:
         generation_config = json.loads(generation_config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        logger.warning(
-            f"Failed to read generation config for model '{model_cfg.model_path}' "
-            f"from '{generation_config_path}': {exc}"
-        )
+        if not model_cfg.generation_config_content_warning_emitted:
+            logger.warning(
+                f"Failed to read generation config for model '{model_cfg.model_path}' "
+                f"from '{generation_config_path}': {exc}"
+            )
+            model_cfg.generation_config_content_warning_emitted = True
         return
 
     if not isinstance(generation_config, dict):
-        logger.warning(
-            f"Ignoring generation config for model '{model_cfg.model_path}' "
-            "because it is not a JSON object."
-        )
+        if not model_cfg.generation_config_content_warning_emitted:
+            logger.warning(
+                f"Ignoring generation config for model '{model_cfg.model_path}' "
+                "because it is not a JSON object."
+            )
+            model_cfg.generation_config_content_warning_emitted = True
         return
 
     encountered_invalid_generation_default = False
