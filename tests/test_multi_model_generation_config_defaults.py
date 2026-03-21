@@ -2160,3 +2160,50 @@ def test_malformed_local_generation_config_warning_is_deduped_across_startup_pha
     model_warning_messages = [message for message in warning_messages if str(model_dir) in message]
     assert len(model_warning_messages) == 1
     assert str(generation_config_path) in model_warning_messages[0]
+
+
+def test_semantically_invalid_generation_config_warning_is_deduped_across_startup_phases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One unchanged semantic-invalid file should not warn once per startup phase."""
+
+    model_dir = tmp_path / "model-semantic-invalid-warning-dedupe"
+    _write_model_dir(model_dir, {"top_p": -0.7})
+    generation_config_path = model_dir / "generation_config.json"
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        f"  - model_path: {model_dir}\n"
+        "    model_type: lm\n"
+        "    model_id: model-semantic-invalid-warning-dedupe\n",
+        encoding="utf-8",
+    )
+
+    warning_messages: list[str] = []
+    sink_id = config_module.logger.add(
+        lambda message: warning_messages.append(str(message).rstrip()),
+        level="WARNING",
+        format="{message}",
+    )
+    try:
+        model_config = load_config_from_yaml(str(config_path)).models[0]
+        proxy = HandlerProcessProxy(
+            model_cfg_dict=model_config.__dict__.copy(),
+            model_type=model_config.model_type,
+            model_path=model_config.model_path,
+            model_id=model_config.model_id,
+        )
+        server_module = _load_server_module(monkeypatch)
+        handler = server_module.create_handler_from_config(model_config)
+    finally:
+        config_module.logger.remove(sink_id)
+
+    assert proxy.default_top_p is None
+    assert handler.default_top_p is None
+
+    model_warning_messages = [message for message in warning_messages if str(model_dir) in message]
+    assert len(model_warning_messages) == 1
+    assert "top_p=-0.7" in model_warning_messages[0]
+    assert str(generation_config_path) not in model_warning_messages[0]

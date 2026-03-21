@@ -168,6 +168,7 @@ RUNTIME_ONLY_MODEL_ENTRY_FIELDS = frozenset(
         "generation_config_seed_attempted",
         "generation_config_lookup_warning_emitted",
         "generation_config_content_warning_emitted",
+        "generation_config_invalid_warning_keys_emitted",
     }
 )
 
@@ -230,6 +231,9 @@ class ModelEntryConfig:
     generation_config_lookup_warning_emitted: bool = field(default=False, repr=False, compare=False)
     generation_config_content_warning_emitted: bool = field(
         default=False, repr=False, compare=False
+    )
+    generation_config_invalid_warning_keys_emitted: set[str] = field(
+        default_factory=set, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
@@ -482,11 +486,14 @@ def _seed_model_defaults_from_generation_config(
                 coerced_value = _GENERATION_CONFIG_VALIDATORS[target_field](coerced_value)
             except (KeyError, TypeError, ValueError):
                 encountered_invalid_generation_default = True
-                logger.warning(
-                    f"Ignoring generation config value for model '{model_cfg.model_path}' "
-                    f"because '{source_key}={source_value!r}' is not a valid "
-                    f"{target_field} value."
-                )
+                warning_key = f"{source_key}={source_value!r}"
+                if warning_key not in model_cfg.generation_config_invalid_warning_keys_emitted:
+                    logger.warning(
+                        f"Ignoring generation config value for model '{model_cfg.model_path}' "
+                        f"because '{source_key}={source_value!r}' is not a valid "
+                        f"{target_field} value."
+                    )
+                    model_cfg.generation_config_invalid_warning_keys_emitted.add(warning_key)
                 continue
             setattr(model_cfg, target_field, coerced_value)
 
