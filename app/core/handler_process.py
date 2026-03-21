@@ -47,6 +47,8 @@ import uuid
 
 from loguru import logger
 
+from app import config as config_module
+
 # ---------------------------------------------------------------------------
 # IPC protocol constants
 # ---------------------------------------------------------------------------
@@ -373,9 +375,16 @@ class HandlerProcessProxy:
         self.handler_type = self._MODEL_TYPE_TO_HANDLER_TYPE.get(model_type, model_type)
         self.model_created: int = 0
 
-        self._model_cfg_dict = model_cfg_dict
+        seeded_model_cfg = config_module.ModelEntryConfig(**model_cfg_dict)
+        if config_module.should_attempt_generation_config_seeding(seeded_model_cfg):
+            config_module.attempt_generation_config_seeding(
+                seeded_model_cfg,
+                resolver=config_module.resolve_generation_config_model_dir,
+            )
+        self._model_cfg_dict = seeded_model_cfg.__dict__.copy()
         for field_name in self._SAMPLING_DEFAULT_FIELDS:
-            setattr(self, field_name, model_cfg_dict.get(field_name))
+            setattr(self, field_name, self._model_cfg_dict.get(field_name))
+        self.debug = bool(self._model_cfg_dict.get("debug", False))
         self._uses_model_sampling_defaults = True
 
         # Use the ``spawn`` start method for clean Metal runtime isolation.

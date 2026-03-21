@@ -30,7 +30,14 @@ import mlx.core as mx
 import uvicorn
 
 from .api.endpoints import router
-from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
+from .config import (
+    MLXServerConfig,
+    ModelEntryConfig,
+    MultiModelServerConfig,
+    attempt_generation_config_seeding,
+    resolve_generation_config_model_dir,
+    should_attempt_generation_config_seeding,
+)
 from .core.handler_process import HandlerProcessProxy
 from .core.model_registry import ModelRegistry
 from .handler import MLXFluxHandler
@@ -45,6 +52,9 @@ MFLUX_INSTALL_HINT = (
     "Install a compatible build separately, for example "
     "`pip install git+https://github.com/cubist38/mflux.git`."
 )
+
+_resolve_generation_config_model_dir = resolve_generation_config_model_dir
+_attempt_generation_config_seeding = attempt_generation_config_seeding
 
 
 def ensure_image_handler_available(model_type: str) -> None:
@@ -108,7 +118,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        print,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
@@ -321,6 +331,11 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         is invalid for the given type.
     """
     model_path = model_cfg.model_path
+    if should_attempt_generation_config_seeding(model_cfg):
+        _attempt_generation_config_seeding(
+            model_cfg,
+            resolver=_resolve_generation_config_model_dir,
+        )
 
     if model_cfg.model_type == "multimodal":
         return _attach_sampling_defaults(
@@ -523,10 +538,6 @@ def create_multi_lifespan(config: MultiModelServerConfig):
     return lifespan
 
 
-# App instance will be created during setup with the correct lifespan
-app = None
-
-
 def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvicorn.Config:
     """Create and configure the FastAPI app and return a Uvicorn config.
 
@@ -536,8 +547,6 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
 
     When ``config_args`` is a ``MultiModelServerConfig`` the multi-handler
     lifespan is used, which registers all models in a ``ModelRegistry``.
-
-    Note: This function mutates the module-level ``app`` global variable.
 
     Parameters
     ----------
@@ -550,8 +559,6 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
-    global app  # noqa: PLW0603
-
     # Extract logging parameters (available on both config types)
     log_file = getattr(config_args, "log_file", None)
     no_log_file = getattr(config_args, "no_log_file", False)
