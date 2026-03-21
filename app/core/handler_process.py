@@ -589,6 +589,7 @@ class HandlerProcessProxy:
         req_id = str(uuid.uuid4())
         result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._stream_queue_size)
         self._pending[req_id] = result_queue
+        stream_completed = False
 
         try:
             await asyncio.to_thread(
@@ -606,18 +607,19 @@ class HandlerProcessProxy:
                 response = await asyncio.wait_for(result_queue.get(), timeout=self._rpc_timeout)
 
                 if response["type"] == _STREAM_END:
+                    stream_completed = True
                     break
                 if response["type"] == "error":
+                    stream_completed = True
                     self._raise_remote_error(response)
 
                 yield response["value"]
         finally:
             self._pending.pop(req_id, None)
-            # Signal child to stop forwarding chunks (e.g. client disconnect).
-            try:
-                self._control_queue.put({"id": req_id, "method": _CANCEL})
-            except (BrokenPipeError, EOFError, OSError):
-                pass
+            if not stream_completed:
+                # Signal child to stop forwarding chunks (e.g. client disconnect).
+                with suppress(BrokenPipeError, EOFError, OSError):
+                    self._control_queue.put({"id": req_id, "method": _CANCEL})
 
     @staticmethod
     def _raise_remote_error(response: dict[str, Any]) -> None:
