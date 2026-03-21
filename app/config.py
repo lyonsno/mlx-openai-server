@@ -429,9 +429,10 @@ def _seed_model_defaults_from_generation_config(
     Explicit YAML defaults remain authoritative; this helper only fills
     fields that are still ``None`` on the ``ModelEntryConfig``.
     Missing or malformed generation-config files are tolerated so
-    request-time env fallback remains available. Parse failures are
-    intentionally retryable later in startup in case the file becomes
-    valid before proxy or child handler construction.
+    request-time env fallback remains available. Parse failures and
+    semantic validation failures are intentionally retryable later in
+    startup in case the file becomes valid before proxy or child handler
+    construction.
     """
 
     if model_cfg.model_type not in {"lm", "multimodal"}:
@@ -458,7 +459,7 @@ def _seed_model_defaults_from_generation_config(
         )
         return
 
-    model_cfg.generation_config_seed_attempted = True
+    encountered_invalid_generation_default = False
 
     for source_key, target_field in _GENERATION_CONFIG_TO_DEFAULT_FIELD.items():
         if getattr(model_cfg, target_field) is not None:
@@ -469,6 +470,7 @@ def _seed_model_defaults_from_generation_config(
                 coerced_value = _GENERATION_CONFIG_COERCERS[target_field](source_value)
                 coerced_value = _GENERATION_CONFIG_VALIDATORS[target_field](coerced_value)
             except (KeyError, TypeError, ValueError):
+                encountered_invalid_generation_default = True
                 logger.warning(
                     f"Ignoring generation config value for model '{model_cfg.model_path}' "
                     f"because '{source_key}={source_value!r}' is not a valid "
@@ -476,6 +478,8 @@ def _seed_model_defaults_from_generation_config(
                 )
                 continue
             setattr(model_cfg, target_field, coerced_value)
+
+    model_cfg.generation_config_seed_attempted = not encountered_invalid_generation_default
 
 
 def has_missing_generation_config_defaults(model_cfg: ModelEntryConfig) -> bool:
@@ -497,8 +501,8 @@ def should_attempt_generation_config_seeding(model_cfg: ModelEntryConfig) -> boo
     partially populated generation config can legitimately leave some mapped
     defaults unset after seeding. Once a valid generation-config object has
     been read for a text-capable model, startup should not repeat the same
-    seeding work. Earlier misses, absent files, or parse failures may still be
-    retried later in startup.
+    seeding work. Earlier misses, absent files, parse failures, or semantic
+    validation failures may still be retried later in startup.
     """
 
     return (
