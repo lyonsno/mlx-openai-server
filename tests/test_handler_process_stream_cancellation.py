@@ -111,3 +111,44 @@ async def test_call_stream_does_not_enqueue_cancel_after_terminal_error(
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == {"message": "boom"}
     assert proxy._control_queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_call_stream_enqueues_cancel_once_after_early_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closing a live stream early should forward exactly one cancel signal."""
+
+    model_cfg = ModelEntryConfig(
+        model_path="dummy-whisper-model",
+        model_type="whisper",
+        model_id="dummy-whisper-model",
+    )
+    proxy = HandlerProcessProxy(
+        model_cfg_dict=model_cfg.__dict__.copy(),
+        model_type=model_cfg.model_type,
+        model_path=model_cfg.model_path,
+        model_id=model_cfg.model_id,
+    )
+    proxy._request_queue = _CaptureQueue()  # type: ignore[assignment]
+    proxy._control_queue = _CaptureQueue()  # type: ignore[assignment]
+    proxy._rpc_timeout = 1.0
+    proxy._stream_queue_size = 4
+
+    req_id = "req-stream-disconnect"
+    monkeypatch.setattr(handler_process_module.uuid, "uuid4", lambda: req_id)
+
+    stream = proxy._call_stream("generate_text_stream", "hello")
+    first_chunk_task = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+
+    result_queue = proxy._pending[req_id]
+    await result_queue.put({"type": "chunk", "value": "hello"})
+
+    assert await first_chunk_task == "hello"
+
+    await stream.aclose()
+
+    assert proxy._control_queue.items == [
+        {"id": req_id, "method": handler_process_module._CANCEL}
+    ]
