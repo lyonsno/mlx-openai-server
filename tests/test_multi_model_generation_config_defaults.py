@@ -1646,6 +1646,147 @@ async def test_invalid_generation_config_keeps_env_fallback_available(
 
 
 @pytest.mark.asyncio
+async def test_semantically_invalid_generation_config_values_keep_env_fallback_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Out-of-range generation-config defaults should be ignored for omitted requests."""
+
+    model_dir = tmp_path / "model-semantic-invalid"
+    _write_model_dir(
+        model_dir,
+        {
+            "temperature": -3,
+            "top_p": 1.7,
+            "top_k": -4,
+            "min_p": -0.2,
+            "repetition_penalty": -3,
+            "max_new_tokens": -5,
+        },
+    )
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"models:\n  - model_path: {model_dir}\n    model_type: lm\n    model_id: model-semantic-invalid\n",
+        encoding="utf-8",
+    )
+
+    warning_messages: list[str] = []
+    sink_id = config_module.logger.add(
+        lambda message: warning_messages.append(str(message).rstrip()),
+        level="WARNING",
+        format="{message}",
+    )
+    try:
+        model_config = load_config_from_yaml(str(config_path)).models[0]
+    finally:
+        config_module.logger.remove(sink_id)
+
+    assert model_config.default_temperature is None
+    assert model_config.default_top_p is None
+    assert model_config.default_top_k is None
+    assert model_config.default_min_p is None
+    assert model_config.default_repetition_penalty is None
+    assert model_config.default_max_tokens is None
+    assert any("temperature=-3" in message for message in warning_messages)
+    assert any("top_p=1.7" in message for message in warning_messages)
+    assert any("top_k=-4" in message for message in warning_messages)
+    assert any("min_p=-0.2" in message for message in warning_messages)
+    assert any("repetition_penalty=-3" in message for message in warning_messages)
+    assert any("max_new_tokens=-5" in message for message in warning_messages)
+
+    endpoints_module = _load_endpoints_module()
+    captured_chat_requests: list[ChatCompletionRequest] = []
+
+    async def _fake_process_text_request(
+        _handler: Any,
+        request: ChatCompletionRequest,
+        request_id: str | None = None,
+    ) -> JSONResponse:
+        del request_id
+        captured_chat_requests.append(request.model_copy(deep=True))
+        return JSONResponse(content={"ok": True})
+
+    handler = types.SimpleNamespace(
+        handler_type="lm",
+        _uses_model_sampling_defaults=True,
+        default_temperature=model_config.default_temperature,
+        default_top_p=model_config.default_top_p,
+        default_top_k=model_config.default_top_k,
+        default_min_p=model_config.default_min_p,
+        default_repetition_penalty=model_config.default_repetition_penalty,
+        default_max_tokens=model_config.default_max_tokens,
+    )
+    registry = _FakeRegistry({"model-semantic-invalid": handler})
+
+    monkeypatch.setattr(endpoints_module, "process_text_request", _fake_process_text_request)
+    for env_name, value in GLOBAL_ENV_DEFAULTS.items():
+        monkeypatch.setenv(env_name, value)
+
+    chat_request = ChatCompletionRequest(
+        model="model-semantic-invalid",
+        messages=[Message(role="user", content="hello")],
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        min_p=None,
+        repetition_penalty=None,
+        max_completion_tokens=None,
+        max_tokens=None,
+    )
+    responses_request = ResponsesRequest(
+        model="model-semantic-invalid",
+        input="hello",
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        min_p=None,
+        repetition_penalty=None,
+        max_output_tokens=None,
+    )
+
+    await endpoints_module.chat_completions(chat_request, _make_raw_request(registry))
+    refined_responses_request = endpoints_module.refine_responses_request(
+        responses_request,
+        handler,
+    )
+
+    assert captured_chat_requests[0].temperature == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_TEMPERATURE"])
+    )
+    assert captured_chat_requests[0].top_p == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_P"])
+    )
+    assert captured_chat_requests[0].top_k == int(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_K"])
+    assert captured_chat_requests[0].min_p == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"])
+    )
+    assert captured_chat_requests[0].repetition_penalty == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_REPETITION_PENALTY"])
+    )
+    assert captured_chat_requests[0].max_completion_tokens == int(
+        GLOBAL_ENV_DEFAULTS["DEFAULT_MAX_TOKENS"]
+    )
+
+    assert refined_responses_request.temperature == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_TEMPERATURE"])
+    )
+    assert refined_responses_request.top_p == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_P"])
+    )
+    assert refined_responses_request.top_k == int(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_K"])
+    assert refined_responses_request.min_p == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"])
+    )
+    assert refined_responses_request.repetition_penalty == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_REPETITION_PENALTY"])
+    )
+    assert refined_responses_request.max_output_tokens == int(
+        GLOBAL_ENV_DEFAULTS["DEFAULT_MAX_TOKENS"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_non_utf8_generation_config_keeps_env_fallback_available(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

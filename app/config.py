@@ -357,6 +357,32 @@ _GENERATION_CONFIG_COERCERS: dict[str, Callable[[object], int | float]] = {
 }
 
 
+def _validate_non_negative_generation_default(value: float) -> int | float:
+    """Validate a non-negative generation default value."""
+
+    if value < 0:
+        raise ValueError("value must be non-negative")
+    return value
+
+
+def _validate_probability_generation_default(value: float) -> int | float:
+    """Validate a probability-like generation default value in ``[0, 1]``."""
+
+    if value < 0 or value > 1:
+        raise ValueError("value must be between 0 and 1")
+    return value
+
+
+_GENERATION_CONFIG_VALIDATORS: dict[str, Callable[[int | float], int | float]] = {
+    "default_max_tokens": _validate_non_negative_generation_default,
+    "default_temperature": _validate_non_negative_generation_default,
+    "default_top_p": _validate_probability_generation_default,
+    "default_top_k": _validate_non_negative_generation_default,
+    "default_min_p": _validate_probability_generation_default,
+    "default_repetition_penalty": _validate_non_negative_generation_default,
+}
+
+
 def _resolve_generation_config_model_dir(model_path: str) -> Path | None:
     """Resolve a model path to a directory that may contain generation config.
 
@@ -441,6 +467,7 @@ def _seed_model_defaults_from_generation_config(
         if source_value is not None:
             try:
                 coerced_value = _GENERATION_CONFIG_COERCERS[target_field](source_value)
+                coerced_value = _GENERATION_CONFIG_VALIDATORS[target_field](coerced_value)
             except (KeyError, TypeError, ValueError):
                 logger.warning(
                     f"Ignoring generation config value for model '{model_cfg.model_path}' "
