@@ -538,6 +538,10 @@ def create_multi_lifespan(config: MultiModelServerConfig):
     return lifespan
 
 
+# App instance will be created during setup with the correct lifespan
+app = None
+
+
 def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvicorn.Config:
     """Create and configure the FastAPI app and return a Uvicorn config.
 
@@ -547,6 +551,9 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
 
     When ``config_args`` is a ``MultiModelServerConfig`` the multi-handler
     lifespan is used, which registers all models in a ``ModelRegistry``.
+
+    Note: This function updates the module-level ``app`` export for
+    compatibility with ``app.server:app`` style importers.
 
     Parameters
     ----------
@@ -578,17 +585,18 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         lifespan_fn = create_lifespan(config_args)
 
     # Create FastAPI app with the configured lifespan
-    app = FastAPI(
+    app_instance = FastAPI(
         title="OpenAI-compatible API",
         description="API for OpenAI-compatible chat completion and text embedding",
         version=__version__,
         lifespan=lifespan_fn,
     )
+    globals()["app"] = app_instance
 
-    app.include_router(router)
+    app_instance.include_router(router)
 
     # Add CORS middleware
-    app.add_middleware(
+    app_instance.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_credentials=True,
@@ -596,7 +604,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         allow_headers=["*"],
     )
 
-    @app.middleware("http")
+    @app_instance.middleware("http")
     async def add_process_time_header(request: Request, call_next):
         """Middleware to add processing time header and run cleanup.
 
@@ -625,7 +633,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
 
         return response
 
-    @app.exception_handler(Exception)
+    @app_instance.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Global exception handler that logs and returns a 500 payload.
 
@@ -643,7 +651,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
     port = config_args.port
     logger.info(f"Starting server on {host}:{port}")
     return uvicorn.Config(
-        app=app,
+        app=app_instance,
         host=host,
         port=port,
         log_level=log_level.lower(),
