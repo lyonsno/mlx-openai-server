@@ -259,6 +259,40 @@ def test_load_config_from_yaml_prefers_explicit_defaults_over_generation_config(
     assert model_config.default_max_tokens == GENERATION_CONFIG_DEFAULTS["max_new_tokens"]
 
 
+def test_load_config_from_yaml_ignores_internal_generation_config_bookkeeping_fields(
+    tmp_path: Path,
+) -> None:
+    """Runtime-only seeding flags from YAML should not suppress default seeding."""
+
+    model_dir = tmp_path / "model-bookkeeping-flags"
+    _write_model_dir(model_dir, GENERATION_CONFIG_DEFAULTS)
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        f"  - model_path: {model_dir}\n"
+        "    model_type: lm\n"
+        "    model_id: model-bookkeeping-flags\n"
+        "    generation_config_seed_attempted: true\n"
+        "    generation_config_lookup_warning_emitted: true\n",
+        encoding="utf-8",
+    )
+
+    model_config = load_config_from_yaml(str(config_path)).models[0]
+
+    assert model_config.default_temperature == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["temperature"]
+    )
+    assert model_config.default_top_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["top_p"])
+    assert model_config.default_top_k == GENERATION_CONFIG_DEFAULTS["top_k"]
+    assert model_config.default_min_p == pytest.approx(GENERATION_CONFIG_DEFAULTS["min_p"])
+    assert model_config.default_repetition_penalty == pytest.approx(
+        GENERATION_CONFIG_DEFAULTS["repetition_penalty"]
+    )
+    assert model_config.default_max_tokens == GENERATION_CONFIG_DEFAULTS["max_new_tokens"]
+    assert model_config.generation_config_lookup_warning_emitted is False
+
+
 def test_load_config_from_yaml_coerces_numeric_generation_config_strings(
     tmp_path: Path,
 ) -> None:

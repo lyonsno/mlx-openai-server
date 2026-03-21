@@ -163,6 +163,9 @@ class MLXServerConfig:
 VALID_MODEL_TYPES = frozenset(
     {"lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"}
 )
+RUNTIME_ONLY_MODEL_ENTRY_FIELDS = frozenset(
+    {"generation_config_seed_attempted", "generation_config_lookup_warning_emitted"}
+)
 
 
 @dataclass
@@ -217,6 +220,8 @@ class ModelEntryConfig:
     default_xtc_threshold: float | None = None
     default_seed: int | None = None
     default_repetition_context_size: int | None = None
+    # Runtime-only generation-config bookkeeping. These fields are used by
+    # startup seeding code and are intentionally ignored when loading YAML.
     generation_config_seed_attempted: bool = field(default=False, repr=False, compare=False)
     generation_config_lookup_warning_emitted: bool = field(default=False, repr=False, compare=False)
 
@@ -581,7 +586,13 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
             msg = f"Model entry at index {idx} is missing required key 'model_path'"
             raise ValueError(msg)
 
-        model_cfg = ModelEntryConfig(**entry)
+        model_cfg = ModelEntryConfig(
+            **{
+                key: value
+                for key, value in entry.items()
+                if key not in RUNTIME_ONLY_MODEL_ENTRY_FIELDS
+            }
+        )
 
         # Enforce unique model_id values
         if model_cfg.model_id in seen_ids:
