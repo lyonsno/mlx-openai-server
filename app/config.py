@@ -376,7 +376,7 @@ def _validate_probability_generation_default(value: float) -> int | float:
 _GENERATION_CONFIG_VALIDATORS: dict[str, Callable[[int | float], int | float]] = {
     "default_max_tokens": _validate_non_negative_generation_default,
     "default_temperature": _validate_non_negative_generation_default,
-    "default_top_p": _validate_probability_generation_default,
+    "default_top_p": _validate_non_negative_generation_default,
     "default_top_k": _validate_non_negative_generation_default,
     "default_min_p": _validate_probability_generation_default,
     "default_repetition_penalty": _validate_non_negative_generation_default,

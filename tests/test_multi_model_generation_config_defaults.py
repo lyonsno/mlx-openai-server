@@ -960,7 +960,7 @@ def test_semantically_invalid_generation_config_can_seed_later_on_proxy_path(
     """An early semantic validation failure should not block later proxy-side pickup."""
 
     model_dir = tmp_path / "model-semantic-invalid-proxy"
-    _write_model_dir(model_dir, {"top_p": 1.7})
+    _write_model_dir(model_dir, {"top_p": -0.7})
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -1026,7 +1026,7 @@ def test_create_handler_from_config_can_seed_later_after_semantically_invalid_ge
     """An early semantic validation failure should not block later child-side pickup."""
 
     model_dir = tmp_path / "model-semantic-invalid-child"
-    _write_model_dir(model_dir, {"top_p": 1.7})
+    _write_model_dir(model_dir, {"top_p": -0.7})
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -1718,7 +1718,7 @@ async def test_semantically_invalid_generation_config_values_keep_env_fallback_a
         model_dir,
         {
             "temperature": -3,
-            "top_p": 1.7,
+            "top_p": -0.7,
             "top_k": -4,
             "min_p": -0.2,
             "repetition_penalty": -3,
@@ -1750,7 +1750,7 @@ async def test_semantically_invalid_generation_config_values_keep_env_fallback_a
     assert model_config.default_repetition_penalty is None
     assert model_config.default_max_tokens is None
     assert any("temperature=-3" in message for message in warning_messages)
-    assert any("top_p=1.7" in message for message in warning_messages)
+    assert any("top_p=-0.7" in message for message in warning_messages)
     assert any("top_k=-4" in message for message in warning_messages)
     assert any("min_p=-0.2" in message for message in warning_messages)
     assert any("repetition_penalty=-3" in message for message in warning_messages)
@@ -1845,6 +1845,96 @@ async def test_semantically_invalid_generation_config_values_keep_env_fallback_a
     assert refined_responses_request.max_output_tokens == int(
         GLOBAL_ENV_DEFAULTS["DEFAULT_MAX_TOKENS"]
     )
+
+
+@pytest.mark.asyncio
+async def test_generation_config_top_p_above_one_matches_yaml_default_behavior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generation-config ``top_p > 1`` should preserve the same effective default as YAML."""
+
+    model_dir = tmp_path / "model-top-p-above-one"
+    _write_model_dir(model_dir, {"top_p": 1.7})
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"models:\n  - model_path: {model_dir}\n    model_type: lm\n    model_id: model-top-p-above-one\n",
+        encoding="utf-8",
+    )
+
+    warning_messages: list[str] = []
+    sink_id = config_module.logger.add(
+        lambda message: warning_messages.append(str(message).rstrip()),
+        level="WARNING",
+        format="{message}",
+    )
+    try:
+        model_config = load_config_from_yaml(str(config_path)).models[0]
+    finally:
+        config_module.logger.remove(sink_id)
+
+    assert model_config.default_top_p == pytest.approx(1.7)
+    assert not any("top_p=1.7" in message for message in warning_messages)
+
+    endpoints_module = _load_endpoints_module()
+    captured_chat_requests: list[ChatCompletionRequest] = []
+
+    async def _fake_process_text_request(
+        _handler: Any,
+        request: ChatCompletionRequest,
+        request_id: str | None = None,
+    ) -> JSONResponse:
+        del request_id
+        captured_chat_requests.append(request.model_copy(deep=True))
+        return JSONResponse(content={"ok": True})
+
+    handler = types.SimpleNamespace(
+        handler_type="lm",
+        _uses_model_sampling_defaults=True,
+        default_temperature=model_config.default_temperature,
+        default_top_p=model_config.default_top_p,
+        default_top_k=model_config.default_top_k,
+        default_min_p=model_config.default_min_p,
+        default_repetition_penalty=model_config.default_repetition_penalty,
+        default_max_tokens=model_config.default_max_tokens,
+    )
+    registry = _FakeRegistry({"model-top-p-above-one": handler})
+
+    monkeypatch.setattr(endpoints_module, "process_text_request", _fake_process_text_request)
+    for env_name, value in GLOBAL_ENV_DEFAULTS.items():
+        monkeypatch.setenv(env_name, value)
+
+    chat_request = ChatCompletionRequest(
+        model="model-top-p-above-one",
+        messages=[Message(role="user", content="hello")],
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        min_p=None,
+        repetition_penalty=None,
+        max_completion_tokens=None,
+        max_tokens=None,
+    )
+    responses_request = ResponsesRequest(
+        model="model-top-p-above-one",
+        input="hello",
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        min_p=None,
+        repetition_penalty=None,
+        max_output_tokens=None,
+    )
+
+    await endpoints_module.chat_completions(chat_request, _make_raw_request(registry))
+    refined_responses_request = endpoints_module.refine_responses_request(
+        responses_request,
+        handler,
+    )
+
+    assert captured_chat_requests[0].top_p == pytest.approx(1.7)
+    assert refined_responses_request.top_p == pytest.approx(1.7)
 
 
 @pytest.mark.asyncio
