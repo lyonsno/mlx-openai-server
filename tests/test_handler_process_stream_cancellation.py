@@ -149,6 +149,4 @@ async def test_call_stream_enqueues_cancel_once_after_early_disconnect(
 
     await stream.aclose()
 
-    assert proxy._control_queue.items == [
-        {"id": req_id, "method": handler_process_module._CANCEL}
-    ]
+    assert proxy._control_queue.items == [{"id": req_id, "method": handler_process_module._CANCEL}]
