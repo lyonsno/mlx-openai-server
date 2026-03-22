@@ -162,7 +162,7 @@ mlx-openai-server launch \
 
 ## Launching Multiple Models
 
-You can run several models in one server using a YAML config file. Each model gets its own handler; requests are routed by the **model ID** you use in the API (the `model` field in the request).
+You can run several models in one server using a YAML config file. Each model gets its own handler; requests are routed by the **served model name** you use in the API (the `model` field in the request).
 
 **Video:** [Serving Multiple Models at Once? mlx-openai-server + OpenWebUI Test](https://www.youtube.com/watch?v=f7WXSOPZ5H4)
 
@@ -182,7 +182,7 @@ Create a YAML file with a `server` section (host, port, logging) and a `models` 
 |-----|----------|-------------|
 | `model_path` | Yes | Path or HuggingFace repo of the model |
 | `model_type` | No | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, `whisper` (default: `lm`) |
-| `model_id` | No | ID used in API requests; defaults to `model_path` if omitted |
+| `served_model_name` | No | ID used in API requests; defaults to `model_path` if omitted |
 | `context_length` | No | Max context length (lm / multimodal) |
 | `queue_timeout`, `queue_size` | No | Per-model queue settings |
 | `prompt_cache_size` | No | Max prompt KV cache entries (lm only; default: 10) |
@@ -204,7 +204,7 @@ models:
   # Language model
   - model_path: mlx-community/GLM-4.7-Flash-8bit
     model_type: lm
-    model_id: glm-4.7-flash    # optional alias (defaults to model_path)
+    served_model_name: glm-4.7-flash    # optional alias (defaults to model_path)
     enable_auto_tool_choice: true
     tool_call_parser: glm4_moe
     reasoning_parser: glm47_flash
@@ -223,7 +223,7 @@ models:
     model_type: image-generation
     config_name: flux2-klein-4b
     quantize: 4
-    model_id: flux2-klein-4b
+    served_model_name: flux2-klein-4b
 ```
 
 A full example is in `examples/config.yaml`.
@@ -258,12 +258,12 @@ models:
   # Always loaded at startup
   - model_path: mlx-community/GLM-4.7-Flash-8bit
     model_type: lm
-    model_id: glm-4.7-flash
+    served_model_name: glm-4.7-flash
 
   # Loaded on first request, unloaded after 120s idle
   - model_path: mlx-community/Qwen3.5-32B-4bit
     model_type: lm
-    model_id: qwen3.5-32b
+    served_model_name: qwen3.5-32b
     on_demand: true
     on_demand_idle_timeout: 120
 ```
@@ -296,7 +296,7 @@ The proxy exposes the same interface as the concrete handlers (`generate_text_st
 
 ### Using the API with multiple models
 
-Set the `model` field in your request to the **model ID** (the `model_id` from the config, or `model_path` if you did not set `model_id`). The server looks up the handler for that ID and runs the request on the correct model.
+Set the `model` field in your request to the **model name** (the `served_model_name` from the config, or `model_path` if you did not set `served_model_name`). The server looks up the handler for that name and runs the request on the correct model.
 
 ```python
 import openai
@@ -310,7 +310,7 @@ r1 = client.chat.completions.create(
 )
 print(r1.choices[0].message.content)
 
-# Use the second model (full path as model_id)
+# Use the second model (full path as served_model_name)
 r2 = client.chat.completions.create(
     model="mlx-community/Qwen3-Coder-Next-4bit",
     messages=[{"role": "user", "content": "Say hello in one word."}],
@@ -367,7 +367,7 @@ print(r2.choices[0].message.content)
 
 The server provides OpenAI-compatible endpoints. Use standard OpenAI client libraries.
 
-> **Model name in requests:** The `model` field should be the model path you passed to `--model-path` (e.g. `mlx-community/Qwen3-Coder-Next-4bit`), the `--served-model-name` you set, or the `model_id` from your YAML config. No API key is required — use any non-empty string (e.g. `"not-needed"`).
+> **Model name in requests:** The `model` field should be the model path you passed to `--model-path` (e.g. `mlx-community/Qwen3-Coder-Next-4bit`), the `--served-model-name` you set, or the `served_model_name` from your YAML config. No API key is required — use any non-empty string (e.g. `"not-needed"`).
 
 ### Supported Endpoints
 

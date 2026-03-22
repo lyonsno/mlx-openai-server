@@ -34,13 +34,13 @@ async def test_call_stream_does_not_enqueue_cancel_after_normal_completion(
     model_cfg = ModelEntryConfig(
         model_path="dummy-whisper-model",
         model_type="whisper",
-        model_id="dummy-whisper-model",
+        served_model_name="dummy-whisper-model",
     )
     proxy = HandlerProcessProxy(
         model_cfg_dict=model_cfg.__dict__.copy(),
         model_type=model_cfg.model_type,
         model_path=model_cfg.model_path,
-        model_id=model_cfg.model_id,
+        served_model_name=model_cfg.served_model_name,
     )
     proxy._request_queue = _CaptureQueue()  # type: ignore[assignment]
     proxy._control_queue = _CaptureQueue()  # type: ignore[assignment]
@@ -73,13 +73,13 @@ async def test_call_stream_does_not_enqueue_cancel_after_terminal_error(
     model_cfg = ModelEntryConfig(
         model_path="dummy-whisper-model",
         model_type="whisper",
-        model_id="dummy-whisper-model",
+        served_model_name="dummy-whisper-model",
     )
     proxy = HandlerProcessProxy(
         model_cfg_dict=model_cfg.__dict__.copy(),
         model_type=model_cfg.model_type,
         model_path=model_cfg.model_path,
-        model_id=model_cfg.model_id,
+        served_model_name=model_cfg.served_model_name,
     )
     proxy._request_queue = _CaptureQueue()  # type: ignore[assignment]
     proxy._control_queue = _CaptureQueue()  # type: ignore[assignment]
@@ -122,13 +122,13 @@ async def test_call_stream_enqueues_cancel_once_after_early_disconnect(
     model_cfg = ModelEntryConfig(
         model_path="dummy-whisper-model",
         model_type="whisper",
-        model_id="dummy-whisper-model",
+        served_model_name="dummy-whisper-model",
     )
     proxy = HandlerProcessProxy(
         model_cfg_dict=model_cfg.__dict__.copy(),
         model_type=model_cfg.model_type,
         model_path=model_cfg.model_path,
-        model_id=model_cfg.model_id,
+        served_model_name=model_cfg.served_model_name,
     )
     proxy._request_queue = _CaptureQueue()  # type: ignore[assignment]
     proxy._control_queue = _CaptureQueue()  # type: ignore[assignment]

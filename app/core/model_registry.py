@@ -393,7 +393,7 @@ class ModelRegistry:
                 model_cfg_dict=cfg["model_cfg_dict"],
                 model_type=cfg["model_type"],
                 model_path=cfg["model_path"],
-                model_id=model_id,
+                served_model_name=model_id,
             )
             await proxy.start(cfg["queue_config"])
 

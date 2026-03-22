@@ -185,6 +185,7 @@ def create_lifespan(config_args: MLXServerConfig):
             if config_args.served_model_name:
                 handler.model_path = config_args.served_model_name
                 logger.info(f"Serving model as '{config_args.served_model_name}'")
+            handler.served_model_name = model_cfg.served_model_name
 
             logger.info("MLX handler initialized successfully")
             app.state.handler = handler
@@ -365,7 +366,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
 
         try:
             for model_cfg in config.models:
-                model_id = model_cfg.model_id  # guaranteed non-None after __post_init__
+                model_id = model_cfg.served_model_name  # guaranteed non-None after __post_init__
 
                 # Serialize the dataclass config to a plain dict for
                 # pickling across the spawn boundary.
@@ -405,7 +406,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                     model_cfg_dict=model_cfg_dict,
                     model_type=model_cfg.model_type,
                     model_path=model_cfg.model_path,
-                    model_id=model_id,
+                    served_model_name=model_id,
                 )
 
                 # Spawn the child process and wait for it to load the model.
@@ -426,7 +427,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
             # as app.state.handler
             for _cfg in config.models:
                 if not _cfg.on_demand:
-                    app.state.handler = registry.get_handler(_cfg.model_id)
+                    app.state.handler = registry.get_handler(_cfg.served_model_name)
                     break
 
             logger.info(

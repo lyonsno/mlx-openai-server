@@ -111,7 +111,7 @@ def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
     logger.info(f"📝 Log Level: {config.log_level}")
     logger.info(f"🔢 Models to load: {len(config.models)}")
     for idx, m in enumerate(config.models, start=1):
-        logger.info(f"  [{idx}] {m.model_id} (type={m.model_type}, path={m.model_path})")
+        logger.info(f"  [{idx}] {m.served_model_name} (type={m.model_type}, path={m.model_path})")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 

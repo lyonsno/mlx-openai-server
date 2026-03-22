@@ -174,9 +174,9 @@ def _get_handler_registry_ownership(raw_request: Request, handler: Any) -> str:
 
     Returns one of:
 
-    - ``owned`` when ``registry.get_handler(handler.model_id) is handler``
+    - ``owned`` when ``registry.get_handler(handler.served_model_name) is handler``
     - ``different`` when that lookup succeeds but returns another object
-    - ``missing`` when the registry has no entry for ``handler.model_id``
+    - ``missing`` when the registry has no entry for ``handler.served_model_name``
     - ``no-registry`` when no registry is attached
     - ``no-model-id`` when the handler exposes no concrete ``model_id``
     - ``no-get-handler`` when the attached registry-like object cannot
@@ -187,7 +187,7 @@ def _get_handler_registry_ownership(raw_request: Request, handler: Any) -> str:
     if registry is None:
         return "no-registry"
 
-    handler_model_id = getattr(handler, "model_id", None)
+    handler_model_id = getattr(handler, "served_model_name", None)
     if not handler_model_id:
         return "no-model-id"
 
@@ -231,7 +231,7 @@ def _normalize_chat_response_model(
         return
 
     if _get_handler_registry_ownership(raw_request, handler) == "owned":
-        request.model = getattr(handler, "model_id", Config.TEXT_MODEL)
+        request.model = getattr(handler, "served_model_name", Config.TEXT_MODEL)
         return
 
     request.model = Config.TEXT_MODEL
@@ -1589,7 +1589,7 @@ def refine_responses_request(
             handler, "default_max_tokens", "DEFAULT_MAX_TOKENS", _parse_env_int
         )
     if not request.model:
-        request.model = getattr(handler, "model_id", Config.TEXT_MODEL)
+        request.model = getattr(handler, "served_model_name", Config.TEXT_MODEL)
     return request
 
 
