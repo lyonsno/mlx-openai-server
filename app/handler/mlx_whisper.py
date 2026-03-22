@@ -33,13 +33,12 @@ class MLXWhisperHandler:
 
     handler_type: str = "whisper"
 
-    def __init__(self, model_path: str, max_concurrency: int = 1):
+    def __init__(self, model_path: str):
         """
         Initialize the handler with the specified model path.
 
         Args:
             model_path (str): Path to the model directory.
-            max_concurrency (int): Maximum number of concurrent model inference tasks.
         """
         self.model_path = model_path
         self.model = MLX_Whisper(model_path)

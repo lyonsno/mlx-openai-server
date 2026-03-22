@@ -34,9 +34,9 @@ class MLXServerConfig:
     model_path: str
     model_type: str = "lm"
     context_length: int | None = None
+    served_model_name: str | None = None
     port: int = 8000
     host: str = "0.0.0.0"
-    max_concurrency: int = 1
     queue_timeout: int = 300
     queue_size: int = 100
     disable_auto_resize: bool = False
@@ -147,6 +147,38 @@ class MLXServerConfig:
         """
         return self.model_path
 
+    def to_model_entry_config(self) -> ModelEntryConfig:
+        """Convert this single-model CLI config to a ``ModelEntryConfig``.
+
+        This allows ``create_handler_from_config`` to be reused for
+        single-model mode, eliminating the duplicated handler
+        construction logic.
+        """
+        return ModelEntryConfig(
+            model_path=self.model_path,
+            model_type=self.model_type,
+            served_model_name=self.served_model_name or self.model_path,
+            context_length=self.context_length,
+            queue_timeout=self.queue_timeout,
+            queue_size=self.queue_size,
+            quantize=self.quantize,
+            config_name=self.config_name,
+            lora_paths=self.lora_paths,
+            lora_scales=self.lora_scales,
+            disable_auto_resize=self.disable_auto_resize,
+            enable_auto_tool_choice=self.enable_auto_tool_choice,
+            tool_call_parser=self.tool_call_parser,
+            reasoning_parser=self.reasoning_parser,
+            message_converter=self.message_converter,
+            trust_remote_code=self.trust_remote_code,
+            chat_template_file=self.chat_template_file,
+            debug=self.debug,
+            prompt_cache_size=self.prompt_cache_size,
+            prompt_cache_max_bytes=self.prompt_cache_max_bytes,
+            draft_model_path=self.draft_model_path,
+            num_draft_tokens=self.num_draft_tokens,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Multi-model YAML configuration
@@ -162,18 +194,17 @@ class ModelEntryConfig:
     """Configuration for a single model entry in a multi-model YAML config.
 
     Each entry maps to exactly one handler that will be registered in
-    the ``ModelRegistry``.  The ``model_id`` defaults to ``model_path``
-    when not set explicitly, giving callers a short alias they can use
-    in API requests.
+    the ``ModelRegistry``.  The ``served_model_name`` defaults to
+    ``model_path`` when not set explicitly, giving callers a short
+    alias they can use in API requests.
     """
 
     model_path: str
     model_type: str = "lm"
-    model_id: str | None = None
+    served_model_name: str | None = None
 
     # Common options
     context_length: int | None = None
-    max_concurrency: int = 1
     queue_timeout: int = 300
     queue_size: int = 100
 
@@ -184,6 +215,10 @@ class ModelEntryConfig:
     # LoRA options
     lora_paths: list[str] | None = None
     lora_scales: list[float] | None = None
+
+    # On-demand (dynamic swapping) options
+    on_demand: bool = False
+    on_demand_idle_timeout: int = 60  # seconds before unloading idle on-demand model
 
     # LM / multimodal options
     disable_auto_resize: bool = False
@@ -211,9 +246,9 @@ class ModelEntryConfig:
     default_repetition_context_size: int | None = None
 
     def __post_init__(self) -> None:
-        """Resolve ``model_id`` and validate ``model_type``."""
-        if self.model_id is None:
-            self.model_id = self.model_path
+        """Resolve ``served_model_name`` and validate ``model_type``."""
+        if self.served_model_name is None:
+            self.served_model_name = self.model_path
 
         if self.model_type not in VALID_MODEL_TYPES:
             msg = (
@@ -331,14 +366,14 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
 
         model_cfg = ModelEntryConfig(**entry)
 
-        # Enforce unique model_id values
-        if model_cfg.model_id in seen_ids:
+        # Enforce unique served_model_name values
+        if model_cfg.served_model_name in seen_ids:
             msg = (
-                f"Duplicate model_id '{model_cfg.model_id}' in config. "
-                "Each model must have a unique model_id."
+                f"Duplicate served_model_name '{model_cfg.served_model_name}' in config. "
+                "Each model must have a unique served_model_name."
             )
             raise ValueError(msg)
-        seen_ids.add(model_cfg.model_id)
+        seen_ids.add(model_cfg.served_model_name)
         model_entries.append(model_cfg)
 
     return MultiModelServerConfig(

@@ -193,7 +193,7 @@ def _handler_worker(
 
     async def _main() -> None:
         model_cfg = ModelEntryConfig(**model_cfg_dict)
-        model_id = model_cfg.model_id
+        model_id = model_cfg.served_model_name
 
         # ------------------------------------------------------------------
         # Handler creation & initialization
@@ -316,7 +316,7 @@ class HandlerProcessProxy:
     ----------
     model_path : str
         Path to the model (used for display / API responses).
-    model_id : str
+    served_model_name : str
         Unique model identifier in the registry.
     handler_type : str
         Handler type string (``"lm"``, ``"multimodal"``, ``"embeddings"``,
@@ -353,7 +353,7 @@ class HandlerProcessProxy:
         model_cfg_dict: dict[str, Any],
         model_type: str,
         model_path: str,
-        model_id: str,
+        served_model_name: str,
     ) -> None:
         """Initialize the handler process proxy.
 
@@ -365,11 +365,11 @@ class HandlerProcessProxy:
             Model type from config (``"lm"``, ``"multimodal"``, etc.).
         model_path : str
             Path to the model.
-        model_id : str
+        served_model_name : str
             Unique identifier for the model.
         """
         self.model_path = model_path
-        self.model_id = model_id
+        self.served_model_name = served_model_name
         self.handler_type = self._MODEL_TYPE_TO_HANDLER_TYPE.get(model_type, model_type)
         self.model_created: int = 0
 
@@ -391,7 +391,7 @@ class HandlerProcessProxy:
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # RPC timeouts and streaming backpressure (set in start() from queue_config).
+        # RPC timeouts and streaming backpressure.
         self._rpc_timeout: float = 600.0
         self._stream_queue_size: int = 64
 
@@ -416,13 +416,12 @@ class HandlerProcessProxy:
         self._loop = asyncio.get_running_loop()
         self._running = True
         self._rpc_timeout = float(queue_config.get("timeout", 300))
-        self._stream_queue_size = int(queue_config.get("stream_queue_size", 64))
 
         # Start the response reader thread.
         self._reader_thread = threading.Thread(
             target=self._response_reader,
             daemon=True,
-            name=f"proxy-reader-{self.model_id}",
+            name=f"proxy-reader-{self.served_model_name}",
         )
         self._reader_thread.start()
 
@@ -436,10 +435,12 @@ class HandlerProcessProxy:
                 self._response_queue,
                 self._control_queue,
             ),
-            name=f"handler-{self.model_id}",
+            name=f"handler-{self.served_model_name}",
         )
         self._process.start()
-        logger.info(f"Spawned handler process for '{self.model_id}' (pid={self._process.pid})")
+        logger.info(
+            f"Spawned handler process for '{self.served_model_name}' (pid={self._process.pid})"
+        )
 
         # Wait for the ready signal.
         ready_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -450,7 +451,7 @@ class HandlerProcessProxy:
                 response = await asyncio.wait_for(ready_queue.get(), timeout=300)
             except TimeoutError as exc:
                 raise RuntimeError(
-                    f"Handler process for '{self.model_id}' did not become ready within 300 s"
+                    f"Handler process for '{self.served_model_name}' did not become ready within 300 s"
                 ) from exc
             finally:
                 self._pending.pop("__ready__", None)
@@ -458,17 +459,17 @@ class HandlerProcessProxy:
             if not response.get("success"):
                 error_msg = response.get("error", "unknown error")
                 raise RuntimeError(
-                    f"Handler process for '{self.model_id}' failed to initialize: {error_msg}"
+                    f"Handler process for '{self.served_model_name}' failed to initialize: {error_msg}"
                 )
         except Exception:
             try:
                 await self.cleanup()
             except Exception:
-                logger.exception(f"Failed to rollback startup for '{self.model_id}'")
+                logger.exception(f"Failed to rollback startup for '{self.served_model_name}'")
             raise
 
         self.model_created = int(time.time())
-        logger.info(f"Handler process for '{self.model_id}' is ready")
+        logger.info(f"Handler process for '{self.served_model_name}' is ready")
 
     def _response_reader(self) -> None:
         """Dedicated thread that reads from the response queue.
@@ -968,7 +969,7 @@ class HandlerProcessProxy:
                     {"id": req_id, "method": _SHUTDOWN},
                 )
             except (BrokenPipeError, EOFError, OSError) as exc:
-                logger.warning(f"Could not send shutdown to '{self.model_id}': {exc}")
+                logger.warning(f"Could not send shutdown to '{self.served_model_name}': {exc}")
             else:
                 # Wait for the child to acknowledge the shutdown.
                 try:
@@ -976,7 +977,7 @@ class HandlerProcessProxy:
                     graceful = True
                 except TimeoutError:
                     logger.warning(
-                        f"Handler process for '{self.model_id}' did not "
+                        f"Handler process for '{self.served_model_name}' did not "
                         "acknowledge shutdown within 10 s; terminating"
                     )
         finally:
@@ -994,7 +995,7 @@ class HandlerProcessProxy:
             pass  # Process handle already closed / invalid.
 
         if self._process.is_alive():
-            logger.warning(f"Force-killing handler process for '{self.model_id}'")
+            logger.warning(f"Force-killing handler process for '{self.served_model_name}'")
             try:
                 self._process.kill()
             except (OSError, ProcessLookupError):
@@ -1008,4 +1009,4 @@ class HandlerProcessProxy:
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2)
 
-        logger.info(f"Handler process for '{self.model_id}' shut down successfully")
+        logger.info(f"Handler process for '{self.served_model_name}' shut down successfully")

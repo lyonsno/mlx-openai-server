@@ -48,7 +48,6 @@ class MLXVLMHandler:
         model_path: str,
         context_length: int | None = None,
         max_workers: int = 4,
-        max_concurrency: int = 1,
         disable_auto_resize: bool = False,
         enable_auto_tool_choice: bool = False,
         tool_call_parser: str = None,
@@ -65,7 +64,6 @@ class MLXVLMHandler:
             model_path (str): Path to the model directory.
             context_length (int | None): Maximum context length for the model. If None, uses model default.
             max_workers (int): Maximum number of worker threads for image processing.
-            max_concurrency (int): Maximum number of concurrent model inference tasks.
             disable_auto_resize (bool): Whether to disable automatic image resizing.
             enable_auto_tool_choice (bool): Enable automatic tool choice.
             tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...)

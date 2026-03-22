@@ -77,6 +77,7 @@ class _InferenceContext:
     rest_input_ids: list[int]
     cache: list[Any]
     cache_key: list[int]
+    total_input_tokens: int
     total_cached_tokens: int
     model_params: dict[str, Any]
     parsers_result: Any
@@ -99,7 +100,6 @@ class MLXLMHandler:
         draft_model_path: str | None = None,
         num_draft_tokens: int = 2,
         context_length: int | None = None,
-        max_concurrency: int = 1,
         enable_auto_tool_choice: bool = False,
         tool_call_parser: str = None,
         reasoning_parser: str = None,
@@ -123,8 +123,6 @@ class MLXLMHandler:
             Number of draft tokens per step when using speculative decoding. Default is 2.
         context_length : int | None
             Maximum context length for the model. If None, uses model default.
-        max_concurrency : int
-            Maximum number of concurrent model inference tasks.
         enable_auto_tool_choice : bool
             Enable automatic tool choice.
         tool_call_parser : str | None
@@ -328,6 +326,16 @@ class MLXLMHandler:
             boundary = self._compute_checkpoint_boundary(
                 refined_messages, input_ids, chat_template_kwargs
             )
+            # For single-turn messages _compute_checkpoint_boundary
+            # returns None because there is no previous-message
+            # boundary.  Fall back to checkpointing all-but-the-last
+            # token so the next identical request can reuse the
+            # prefill via a "shorter" trie hit.  We keep at least one
+            # remaining token so the model's generate() call still
+            # receives a non-empty input_ids.
+            if boundary is None and len(input_ids) > 1:
+                boundary = len(input_ids) - 1
+
             cached_prefix_len = len(input_ids) - len(rest_input_ids)
             if boundary is not None and boundary > cached_prefix_len:
                 # checkpoint_position is relative to rest_input_ids
@@ -379,6 +387,7 @@ class MLXLMHandler:
             rest_input_ids=rest_input_ids,
             cache=cache,
             cache_key=cache_key,
+            total_input_tokens=total_input_tokens,
             total_cached_tokens=total_cached_tokens,
             model_params=model_params,
             parsers_result=parsers_result,
@@ -408,6 +417,7 @@ class MLXLMHandler:
             ctx = await self._build_inference_context(request)
             cache = ctx.cache
             cache_key = ctx.cache_key
+            total_input_tokens = ctx.total_input_tokens
             total_cached_tokens = ctx.total_cached_tokens
             model_params = ctx.model_params
             parsers_result = ctx.parsers_result
@@ -717,7 +727,7 @@ class MLXLMHandler:
 
                         yield text
 
-            total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
+            total_tokens = total_input_tokens + final_chunk.generation_tokens
             self.prompt_cache.insert_cache(cache_key, cache)
             cache_inserted = True
 
@@ -725,7 +735,7 @@ class MLXLMHandler:
                 self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(raw_text)
                 log_debug_stats(
-                    final_chunk.prompt_tokens,
+                    total_input_tokens,
                     final_chunk.generation_tokens,
                     total_tokens,
                     final_chunk.generation_tps,
@@ -734,7 +744,7 @@ class MLXLMHandler:
 
             yield {
                 "__usage__": UsageInfo(
-                    prompt_tokens=final_chunk.prompt_tokens,
+                    prompt_tokens=total_input_tokens,
                     completion_tokens=final_chunk.generation_tokens,
                     total_tokens=total_tokens,
                     prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),
@@ -785,6 +795,7 @@ class MLXLMHandler:
             ctx = await self._build_inference_context(request)
             model_params = ctx.model_params
             parsers_result = ctx.parsers_result
+            total_input_tokens = ctx.total_input_tokens
             total_cached_tokens = ctx.total_cached_tokens
 
             request_data = {
@@ -902,7 +913,7 @@ class MLXLMHandler:
             else:
                 parsed_response["content"] = response_text
 
-            total_tokens = response.prompt_tokens + response.generation_tokens
+            total_tokens = total_input_tokens + response.generation_tokens
 
             if self.debug and isinstance(parsed_response.get("tool_calls"), list):
                 for tool_call in parsed_response["tool_calls"]:
@@ -917,7 +928,7 @@ class MLXLMHandler:
                 self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(response.text)
                 log_debug_stats(
-                    response.prompt_tokens,
+                    total_input_tokens,
                     response.generation_tokens,
                     total_tokens,
                     response.generation_tps,
@@ -925,7 +936,7 @@ class MLXLMHandler:
                 )
 
             usage = UsageInfo(
-                prompt_tokens=response.prompt_tokens,
+                prompt_tokens=total_input_tokens,
                 completion_tokens=response.generation_tokens,
                 total_tokens=total_tokens,
                 prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),

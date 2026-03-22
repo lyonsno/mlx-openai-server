@@ -85,15 +85,16 @@ def _get_handler_type(handler: Any) -> str:
     return getattr(handler, "handler_type", "")
 
 
-def _resolve_handler(
+async def _resolve_handler(
     raw_request: Request,
     model_id: str | None = None,
 ) -> Any | None:
     """Resolve the correct handler for a request.
 
     In multi-handler mode (``app.state.registry`` is set) the handler
-    is looked up by ``model_id``.  In single-handler mode the global
-    ``app.state.handler`` is returned.
+    is looked up by ``model_id``.  For on-demand models the handler is
+    loaded dynamically if not already in memory.  In single-handler
+    mode the global ``app.state.handler`` is returned.
 
     Parameters
     ----------
@@ -112,27 +113,60 @@ def _resolve_handler(
     ------
     HTTPException
         404 when a ``model_id`` is provided but not found in the
-        registry.
+        registry.  503 when an on-demand model fails to load.
 
     """
     registry = getattr(raw_request.app.state, "registry", None)
     if registry is not None and model_id is not None:
+        # Try the normal (already-loaded) path first
         try:
             return registry.get_handler(model_id)
-        except KeyError as exc:
-            raise HTTPException(
-                status_code=HTTPStatus.NOT_FOUND,
-                detail={
-                    "error": {
-                        "message": str(exc),
-                        "type": "model_not_found",
-                        "code": HTTPStatus.NOT_FOUND,
-                    }
-                },
-            ) from exc
+        except KeyError:
+            pass
+
+        # Check if this is an on-demand model that needs loading
+        if registry.is_on_demand(model_id):
+            try:
+                handler = await registry.ensure_on_demand_loaded(model_id)
+                # Tag the request so the on-demand scope can release it
+                raw_request.state.on_demand_model_id = model_id
+                return handler
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": {
+                            "message": f"Failed to load on-demand model '{model_id}': {exc}",
+                            "type": "model_load_error",
+                            "code": HTTPStatus.SERVICE_UNAVAILABLE,
+                        }
+                    },
+                ) from exc
+
+        # Model not found at all
+        available = ", ".join(registry.list_model_ids()) or "(none)"
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail={
+                "error": {
+                    "message": f"Model '{model_id}' not found. Available models: {available}",
+                    "type": "model_not_found",
+                    "code": HTTPStatus.NOT_FOUND,
+                }
+            },
+        )
 
     # Fallback: single-handler mode
     return getattr(raw_request.app.state, "handler", None)
+
+
+async def _release_on_demand(raw_request: Request) -> None:
+    """Release the on-demand model reference after a request completes."""
+    model_id = getattr(raw_request.state, "on_demand_model_id", None)
+    if model_id is not None:
+        registry = getattr(raw_request.app.state, "registry", None)
+        if registry is not None:
+            await registry.release_on_demand(model_id)
 
 
 def _get_handler_registry_ownership(raw_request: Request, handler: Any) -> str:
@@ -140,9 +174,9 @@ def _get_handler_registry_ownership(raw_request: Request, handler: Any) -> str:
 
     Returns one of:
 
-    - ``owned`` when ``registry.get_handler(handler.model_id) is handler``
+    - ``owned`` when ``registry.get_handler(handler.served_model_name) is handler``
     - ``different`` when that lookup succeeds but returns another object
-    - ``missing`` when the registry has no entry for ``handler.model_id``
+    - ``missing`` when the registry has no entry for ``handler.served_model_name``
     - ``no-registry`` when no registry is attached
     - ``no-model-id`` when the handler exposes no concrete ``model_id``
     - ``no-get-handler`` when the attached registry-like object cannot
@@ -153,7 +187,7 @@ def _get_handler_registry_ownership(raw_request: Request, handler: Any) -> str:
     if registry is None:
         return "no-registry"
 
-    handler_model_id = getattr(handler, "model_id", None)
+    handler_model_id = getattr(handler, "served_model_name", None)
     if not handler_model_id:
         return "no-model-id"
 
@@ -197,10 +231,28 @@ def _normalize_chat_response_model(
         return
 
     if _get_handler_registry_ownership(raw_request, handler) == "owned":
-        request.model = getattr(handler, "model_id", Config.TEXT_MODEL)
+        request.model = getattr(handler, "served_model_name", Config.TEXT_MODEL)
         return
 
     request.model = Config.TEXT_MODEL
+
+
+def _normalize_request_model(raw_request: Request, request: Any, handler: Any) -> None:
+    """Replace the default ``Config.TEXT_MODEL`` placeholder with the handler's real name.
+
+    In single-handler mode, ``request.model`` defaults to
+    ``Config.TEXT_MODEL`` (``"local-text-model"``).  When a
+    ``--served-model-name`` is configured the handler's
+    ``model_path`` reflects the custom name, so we propagate it
+    into the request so that response payloads (including stream
+    chunks) carry the correct model identifier.
+    """
+    if request.model == Config.TEXT_MODEL and "model" not in getattr(
+        request, "model_fields_set", set()
+    ):
+        registry = getattr(raw_request.app.state, "registry", None)
+        if registry is None:
+            request.model = getattr(handler, "model_path", request.model)
 
 
 def _should_use_legacy_chat_fallback(
@@ -491,7 +543,7 @@ async def chat_completions(
     if not request.model:
         request.model = Config.TEXT_MODEL
     used_legacy_chat_fallback = _should_use_legacy_chat_fallback(raw_request, request)
-    handler = _resolve_handler(
+    handler = await _resolve_handler(
         raw_request,
         model_id=None if used_legacy_chat_fallback else request.model,
     )
@@ -504,47 +556,52 @@ async def chat_completions(
             ),
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
-    _normalize_chat_response_model(
-        raw_request,
-        request,
-        handler,
-        used_legacy_chat_fallback=used_legacy_chat_fallback,
-    )
-    request = refine_chat_completion_request(request, handler)
-
-    handler_type = _get_handler_type(handler)
-    if handler_type not in ("lm", "multimodal"):
-        return JSONResponse(
-            content=create_error_response(
-                "Unsupported model type for chat completions. "
-                f"Handler for '{request.model}' is {type(handler).__name__} "
-                f"(handler_type={handler_type!r}).",
-                "unsupported_request",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
-
-    # Get request ID from middleware
-    request_id = getattr(raw_request.state, "request_id", None)
-    if getattr(handler, "debug", False):
-        log_debug_server_request(
-            route="/v1/chat/completions",
-            request_payload=request.model_dump(exclude_none=True),
-            request_id=request_id,
-        )
 
     try:
-        if handler_type == "multimodal":
-            return await process_multimodal_request(handler, request, request_id)
-        return await process_text_request(handler, request, request_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error processing chat completion request: {type(e).__name__}: {e}")
-        return JSONResponse(
-            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
+        _normalize_request_model(raw_request, request, handler)
+        _normalize_chat_response_model(
+            raw_request,
+            request,
+            handler,
+            used_legacy_chat_fallback=used_legacy_chat_fallback,
         )
+        request = refine_chat_completion_request(request, handler)
+
+        handler_type = _get_handler_type(handler)
+        if handler_type not in ("lm", "multimodal"):
+            return JSONResponse(
+                content=create_error_response(
+                    "Unsupported model type for chat completions. "
+                    f"Handler for '{request.model}' is {type(handler).__name__} "
+                    f"(handler_type={handler_type!r}).",
+                    "unsupported_request",
+                    HTTPStatus.BAD_REQUEST,
+                ),
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+
+        # Get request ID from middleware
+        request_id = getattr(raw_request.state, "request_id", None)
+        if getattr(handler, "debug", False):
+            log_debug_server_request(
+                route="/v1/chat/completions",
+                request_payload=request.model_dump(exclude_none=True),
+                request_id=request_id,
+            )
+
+        try:
+            if handler_type == "multimodal":
+                return await process_multimodal_request(handler, request, request_id)
+            return await process_text_request(handler, request, request_id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error processing chat completion request: {type(e).__name__}: {e}")
+            return JSONResponse(
+                content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+    finally:
+        await _release_on_demand(raw_request)
 
 
 @router.post("/v1/embeddings", response_model=None)
@@ -552,7 +609,7 @@ async def embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse | JSONResponse:
     """Handle embedding requests."""
-    handler = _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -563,27 +620,31 @@ async def embeddings(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    if _get_handler_type(handler) != "embeddings":
-        return JSONResponse(
-            content=create_error_response(
-                "Unsupported model type for embeddings. "
-                f"Handler for '{request.model}' is {type(handler).__name__}.",
-                "unsupported_request",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
-
     try:
-        embeddings = await handler.generate_embeddings_response(request)
-        return create_response_embeddings(embeddings, request.model, request.encoding_format)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error processing embedding request: {type(e).__name__}: {e}")
-        return JSONResponse(
-            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
-        )
+        _normalize_request_model(raw_request, request, handler)
+        if _get_handler_type(handler) != "embeddings":
+            return JSONResponse(
+                content=create_error_response(
+                    "Unsupported model type for embeddings. "
+                    f"Handler for '{request.model}' is {type(handler).__name__}.",
+                    "unsupported_request",
+                    HTTPStatus.BAD_REQUEST,
+                ),
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+
+        try:
+            embeddings = await handler.generate_embeddings_response(request)
+            return create_response_embeddings(embeddings, request.model, request.encoding_format)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error processing embedding request: {type(e).__name__}: {e}")
+            return JSONResponse(
+                content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+    finally:
+        await _release_on_demand(raw_request)
 
 
 @router.post("/v1/images/generations", response_model=None)
@@ -591,7 +652,7 @@ async def image_generations(
     request: ImageGenerationRequest, raw_request: Request
 ) -> ImageGenerationResponse | JSONResponse:
     """Handle image generation requests."""
-    handler = _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -602,29 +663,33 @@ async def image_generations(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    # Check if the handler supports image generation
-    if _get_handler_type(handler) != "image":
-        return JSONResponse(
-            content=create_error_response(
-                "Image generation requests require an image generation model. "
-                f"Handler for '{request.model}' is {type(handler).__name__}.",
-                "unsupported_request",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
-
     try:
-        image_response: ImageGenerationResponse = await handler.generate_image(request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error processing image generation request: {type(e).__name__}: {e}")
-        return JSONResponse(
-            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
-        )
-    else:
-        return image_response
+        _normalize_request_model(raw_request, request, handler)
+        # Check if the handler supports image generation
+        if _get_handler_type(handler) != "image":
+            return JSONResponse(
+                content=create_error_response(
+                    "Image generation requests require an image generation model. "
+                    f"Handler for '{request.model}' is {type(handler).__name__}.",
+                    "unsupported_request",
+                    HTTPStatus.BAD_REQUEST,
+                ),
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+
+        try:
+            image_response: ImageGenerationResponse = await handler.generate_image(request)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error processing image generation request: {type(e).__name__}: {e}")
+            return JSONResponse(
+                content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+        else:
+            return image_response
+    finally:
+        await _release_on_demand(raw_request)
 
 
 @router.post("/v1/images/edits", response_model=None)
@@ -632,7 +697,7 @@ async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
 ) -> ImageEditResponse | JSONResponse:
     """Handle image editing requests with dynamic provider routing."""
-    handler = _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -643,28 +708,32 @@ async def create_image_edit(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    # Check if the handler supports image editing
-    if _get_handler_type(handler) != "image":
-        return JSONResponse(
-            content=create_error_response(
-                "Image editing requests require an image editing model. "
-                f"Handler for '{request.model}' is {type(handler).__name__}.",
-                "unsupported_request",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
     try:
-        image_response: ImageEditResponse = await handler.edit_image(request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error processing image edit request: {type(e).__name__}: {e}")
-        return JSONResponse(
-            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
-        )
-    else:
-        return image_response
+        _normalize_request_model(raw_request, request, handler)
+        # Check if the handler supports image editing
+        if _get_handler_type(handler) != "image":
+            return JSONResponse(
+                content=create_error_response(
+                    "Image editing requests require an image editing model. "
+                    f"Handler for '{request.model}' is {type(handler).__name__}.",
+                    "unsupported_request",
+                    HTTPStatus.BAD_REQUEST,
+                ),
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+        try:
+            image_response: ImageEditResponse = await handler.edit_image(request)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error processing image edit request: {type(e).__name__}: {e}")
+            return JSONResponse(
+                content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+        else:
+            return image_response
+    finally:
+        await _release_on_demand(raw_request)
 
 
 @router.post("/v1/audio/transcriptions", response_model=None)
@@ -672,18 +741,19 @@ async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
 ) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:
     """Handle audio transcription requests."""
-    try:
-        handler = _resolve_handler(raw_request, model_id=request.model)
-        if handler is None:
-            return JSONResponse(
-                content=create_error_response(
-                    "Model handler not initialized",
-                    "service_unavailable",
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                ),
-                status_code=HTTPStatus.SERVICE_UNAVAILABLE,
-            )
+    handler = await _resolve_handler(raw_request, model_id=request.model)
+    if handler is None:
+        return JSONResponse(
+            content=create_error_response(
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
 
+    try:
+        _normalize_request_model(raw_request, request, handler)
         if request.stream:
             # procoess the request before sending to the handler
             request_data = await handler.prepare_transcription_request(request)
@@ -708,6 +778,8 @@ async def create_audio_transcriptions(
         )
     else:
         return transcription_response
+    finally:
+        await _release_on_demand(raw_request)
 
 
 def create_response_embeddings(
@@ -1517,7 +1589,7 @@ def refine_responses_request(
             handler, "default_max_tokens", "DEFAULT_MAX_TOKENS", _parse_env_int
         )
     if not request.model:
-        request.model = getattr(handler, "model_id", Config.TEXT_MODEL)
+        request.model = getattr(handler, "served_model_name", Config.TEXT_MODEL)
     return request
 
 
@@ -1906,7 +1978,7 @@ async def responses_endpoint(
     request: ResponsesRequest, raw_request: Request
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
     """Handle Responses API requests (OpenAI-compatible)."""
-    handler = _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -1917,41 +1989,45 @@ async def responses_endpoint(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    if _should_preserve_legacy_responses_model(raw_request, request, handler):
-        # Single-model mode preserves the legacy alias even if a future
-        # handler/proxy refactor adds a concrete ``model_id`` attribute,
-        # or a registry-like object is attached without owning it.
-        request.model = Config.TEXT_MODEL
-
-    handler_type = _get_handler_type(handler)
-    if handler_type not in ("lm", "multimodal"):
-        return JSONResponse(
-            content=create_error_response(
-                "Unsupported model type for responses. "
-                f"Handler for '{request.model}' is {type(handler).__name__} "
-                f"(handler_type={handler_type!r}).",
-                "unsupported_request",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
-
-    request_id = getattr(raw_request.state, "request_id", None)
-    if getattr(handler, "debug", False):
-        log_debug_server_request(
-            route="/v1/responses",
-            request_payload=request.model_dump(exclude_none=True),
-            request_id=request_id,
-        )
-
     try:
-        if handler_type == "multimodal":
-            return await process_multimodal_responses_request(handler, request)
-        return await process_text_responses_request(handler, request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error processing responses request: {type(e).__name__}: {e}")
-        return JSONResponse(
-            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
-        )
+        _normalize_request_model(raw_request, request, handler)
+        if _should_preserve_legacy_responses_model(raw_request, request, handler):
+            # Single-model mode preserves the legacy alias even if a future
+            # handler/proxy refactor adds a concrete ``model_id`` attribute,
+            # or a registry-like object is attached without owning it.
+            request.model = Config.TEXT_MODEL
+
+        handler_type = _get_handler_type(handler)
+        if handler_type not in ("lm", "multimodal"):
+            return JSONResponse(
+                content=create_error_response(
+                    "Unsupported model type for responses. "
+                    f"Handler for '{request.model}' is {type(handler).__name__} "
+                    f"(handler_type={handler_type!r}).",
+                    "unsupported_request",
+                    HTTPStatus.BAD_REQUEST,
+                ),
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+
+        request_id = getattr(raw_request.state, "request_id", None)
+        if getattr(handler, "debug", False):
+            log_debug_server_request(
+                route="/v1/responses",
+                request_payload=request.model_dump(exclude_none=True),
+                request_id=request_id,
+            )
+
+        try:
+            if handler_type == "multimodal":
+                return await process_multimodal_responses_request(handler, request)
+            return await process_text_responses_request(handler, request)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error processing responses request: {type(e).__name__}: {e}")
+            return JSONResponse(
+                content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+    finally:
+        await _release_on_demand(raw_request)

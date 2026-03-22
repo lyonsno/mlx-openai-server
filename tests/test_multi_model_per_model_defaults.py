@@ -122,7 +122,7 @@ def _single_model_registry_case(case: str, handler: Any) -> _FakeRegistry | None
             {
                 "model-a": types.SimpleNamespace(
                     handler_type="lm",
-                    model_id="model-a",
+                    served_model_name="model-a",
                     model_path="other/model/path",
                 )
             }
@@ -130,9 +130,9 @@ def _single_model_registry_case(case: str, handler: Any) -> _FakeRegistry | None
     if case == "foreign-owned-handler-id":
         return _FakeRegistry(
             {
-                handler.model_id: types.SimpleNamespace(
+                handler.served_model_name: types.SimpleNamespace(
                     handler_type="lm",
-                    model_id=handler.model_id,
+                    served_model_name=handler.served_model_name,
                     model_path="other/model/path",
                 )
             }
@@ -169,7 +169,7 @@ def test_load_config_from_yaml_preserves_per_model_sampling_defaults(tmp_path: P
         "models:\n"
         "  - model_path: /models/model-a\n"
         "    model_type: lm\n"
-        "    model_id: model-a\n"
+        "    served_model_name: model-a\n"
         "    default_temperature: 1.0\n"
         "    default_top_p: 0.95\n"
         "    default_top_k: 35\n"
@@ -183,7 +183,7 @@ def test_load_config_from_yaml_preserves_per_model_sampling_defaults(tmp_path: P
         "    default_repetition_context_size: 41\n"
         "  - model_path: /models/model-b\n"
         "    model_type: lm\n"
-        "    model_id: model-b\n"
+        "    served_model_name: model-b\n"
         "    default_temperature: 0.7\n"
         "    default_top_p: 0.9\n"
         "    default_top_k: 20\n"
@@ -577,7 +577,7 @@ async def test_responses_omitted_model_uses_backward_compatible_fallback_handler
 
     fallback_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="alias-a",
+        served_model_name="alias-a",
         _uses_model_sampling_defaults=True,
         **PER_MODEL_DEFAULTS_A,
     )
@@ -687,7 +687,7 @@ async def test_chat_completions_omitted_model_reports_resolved_fallback_model_id
 
     fallback_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="alias-a",
+        served_model_name="alias-a",
         model_path="mlx-community/model-a-4bit",
         debug=False,
         generate_text_response=_fake_generate_text_response,
@@ -715,7 +715,7 @@ async def test_chat_completions_stream_omitted_model_reports_resolved_fallback_m
 
     fallback_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="alias-a",
+        served_model_name="alias-a",
         model_path="mlx-community/model-a-4bit",
         debug=False,
         generate_text_stream=_fake_generate_text_stream,
@@ -758,7 +758,7 @@ async def test_chat_completions_explicit_legacy_alias_without_registry_entry_sti
 
     fallback_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="alias-a",
+        served_model_name="alias-a",
         model_path="mlx-community/model-a-4bit",
         debug=False,
         generate_text_response=_fake_generate_text_response,
@@ -792,7 +792,7 @@ async def test_responses_omitted_model_reports_resolved_fallback_model_id(
 
     fallback_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="alias-a",
+        served_model_name="alias-a",
         model_path="mlx-community/model-a-4bit",
         debug=False,
         generate_text_response=_fake_generate_text_response,
@@ -820,7 +820,7 @@ async def test_responses_stream_omitted_model_reports_resolved_fallback_model_id
 
     fallback_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="alias-a",
+        served_model_name="alias-a",
         model_path="mlx-community/model-a-4bit",
         debug=False,
         generate_text_stream=_fake_generate_text_stream,
@@ -864,7 +864,7 @@ async def test_responses_explicit_legacy_alias_without_registry_entry_still_404s
 
     fallback_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="alias-a",
+        served_model_name="alias-a",
         model_path="mlx-community/model-a-4bit",
         debug=False,
         generate_text_response=_fake_generate_text_response,
@@ -894,7 +894,7 @@ async def test_responses_single_model_omitted_model_preserves_legacy_default_ali
     """Single-model omitted Responses requests should still report ``local-text-model``.
 
     The real single-model boot path does not currently attach
-    ``handler.model_id``. This test includes one anyway so the contract
+    ``handler.served_model_name``. This test includes one anyway so the contract
     stays pinned if a future handler or proxy refactor adds that field.
     """
 
@@ -907,7 +907,7 @@ async def test_responses_single_model_omitted_model_preserves_legacy_default_ali
     # expose a concrete model_id while the API contract stays legacy.
     single_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="actual-single-id",
+        served_model_name="actual-single-id",
         model_path="actual/model/path",
         debug=False,
         generate_text_response=_fake_generate_text_response,
@@ -936,7 +936,7 @@ async def test_responses_stream_single_model_omitted_model_preserves_legacy_defa
     """Streamed single-model omitted Responses requests should still report ``local-text-model``.
 
     The real single-model boot path does not currently attach
-    ``handler.model_id``. This test includes one anyway so the stream
+    ``handler.served_model_name``. This test includes one anyway so the stream
     path stays aligned if that changes later.
     """
 
@@ -947,7 +947,7 @@ async def test_responses_stream_single_model_omitted_model_preserves_legacy_defa
 
     single_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="actual-single-id",
+        served_model_name="actual-single-id",
         model_path="actual/model/path",
         debug=False,
         generate_text_stream=_fake_generate_text_stream,
@@ -998,7 +998,7 @@ async def test_chat_completions_single_model_omitted_model_preserves_legacy_defa
 
     single_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="actual-single-id",
+        served_model_name="actual-single-id",
         model_path="actual/model/path",
         debug=False,
         generate_text_response=_fake_generate_text_response,
@@ -1033,7 +1033,7 @@ async def test_chat_completions_stream_single_model_omitted_model_preserves_lega
 
     single_handler = types.SimpleNamespace(
         handler_type="lm",
-        model_id="actual-single-id",
+        served_model_name="actual-single-id",
         model_path="actual/model/path",
         debug=False,
         generate_text_stream=_fake_generate_text_stream,

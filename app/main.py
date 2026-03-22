@@ -51,12 +51,13 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
     logger.info(f"✨ MLX Server v{__version__} Starting ✨")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     logger.info(f"🔮 Model Path: {config_args.model_path}")
+    if config_args.served_model_name:
+        logger.info(f"🔮 Served Model Name: {config_args.served_model_name}")
     logger.info(f"🔮 Model Type: {config_args.model_type}")
     if config_args.context_length:
         logger.info(f"🔮 Context Length: {config_args.context_length}")
     logger.info(f"🌐 Host: {config_args.host}")
     logger.info(f"🔌 Port: {config_args.port}")
-    logger.info(f"⚡ Max Concurrency: {config_args.max_concurrency}")
     logger.info(f"⏱️ Queue Timeout: {config_args.queue_timeout} seconds")
     logger.info(f"📊 Queue Size: {config_args.queue_size}")
     if config_args.model_type in ["image-generation", "image-edit"]:
@@ -110,7 +111,7 @@ def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
     logger.info(f"📝 Log Level: {config.log_level}")
     logger.info(f"🔢 Models to load: {len(config.models)}")
     for idx, m in enumerate(config.models, start=1):
-        logger.info(f"  [{idx}] {m.model_id} (type={m.model_type}, path={m.model_path})")
+        logger.info(f"  [{idx}] {m.served_model_name} (type={m.model_type}, path={m.model_path})")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
