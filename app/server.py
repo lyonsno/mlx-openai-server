@@ -41,9 +41,8 @@ from .handler.mlx_whisper import MLXWhisperHandler
 from .version import __version__
 
 MFLUX_INSTALL_HINT = (
-    "Image generation and editing require the optional `mflux` package. "
-    "Install a compatible build separately, for example "
-    "`pip install git+https://github.com/cubist38/mflux.git`."
+    "Image generation and editing require the `mflux` package. "
+    "Install it with `pip install mflux==0.17.0`."
 )
 
 

@@ -75,11 +75,6 @@ source .venv/bin/activate
 # Install core server from PyPI
 uv pip install mlx-openai-server
 
-# Optional: install image generation/editing support separately
-# `mlx-openai-server[image]` is not available yet because PyPI rejects
-# git-based direct dependencies in published package metadata.
-uv pip install git+https://github.com/cubist38/mflux.git
-
 # Or install from GitHub
 uv pip install git+https://github.com/cubist38/mlx-openai-server.git
 ```
