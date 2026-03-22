@@ -391,7 +391,7 @@ class HandlerProcessProxy:
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # RPC timeouts and streaming backpressure (set in start() from queue_config).
+        # RPC timeouts and streaming backpressure.
         self._rpc_timeout: float = 600.0
         self._stream_queue_size: int = 64
 
@@ -416,7 +416,6 @@ class HandlerProcessProxy:
         self._loop = asyncio.get_running_loop()
         self._running = True
         self._rpc_timeout = float(queue_config.get("timeout", 300))
-        self._stream_queue_size = int(queue_config.get("stream_queue_size", 64))
 
         # Start the response reader thread.
         self._reader_thread = threading.Thread(

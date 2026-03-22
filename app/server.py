@@ -126,29 +126,6 @@ def configure_logging(
         )
 
 
-def get_model_identifier(config_args: MLXServerConfig) -> str:
-    """Compute the identifier passed to MLX handlers.
-
-    Presently the identifier is the raw model path supplied on the
-    command line. This helper centralizes that logic so it can be
-    changed in a single place later (for example, to map shortcuts to
-    real paths).
-
-    Parameters
-    ----------
-    config_args:
-        Configuration object produced by the CLI. The attribute
-        ``model_path`` is read to produce the identifier.
-
-    Returns
-    -------
-    str
-        Value that identifies the model for handler initialization.
-    """
-
-    return config_args.model_path
-
-
 def create_lifespan(config_args: MLXServerConfig):
     """Create an async FastAPI lifespan context manager bound to configuration.
 
@@ -190,76 +167,21 @@ def create_lifespan(config_args: MLXServerConfig):
             FastAPI application instance being started.
         """
         try:
-            model_identifier = get_model_identifier(config_args)
-            if config_args.model_type == "image-generation":
-                logger.info(f"Initializing MLX handler with model name: {model_identifier}")
-            else:
-                logger.info(f"Initializing MLX handler with model path: {model_identifier}")
+            model_cfg = config_args.to_model_entry_config()
+            ensure_image_handler_available(model_cfg.model_type)
 
-            if config_args.model_type == "multimodal":
-                handler = MLXVLMHandler(
-                    model_path=model_identifier,
-                    context_length=config_args.context_length,
-                    disable_auto_resize=config_args.disable_auto_resize,
-                    enable_auto_tool_choice=config_args.enable_auto_tool_choice,
-                    tool_call_parser=config_args.tool_call_parser,
-                    reasoning_parser=config_args.reasoning_parser,
-                    message_converter=config_args.message_converter,
-                    trust_remote_code=config_args.trust_remote_code,
-                    chat_template_file=config_args.chat_template_file,
-                    debug=config_args.debug,
-                )
-            elif config_args.model_type == "image-generation":
-                ensure_image_handler_available(config_args.model_type)
-                handler = MLXFluxHandler(
-                    model_path=model_identifier,
-                    quantize=config_args.quantize,
-                    config_name=config_args.config_name,
-                    lora_paths=config_args.lora_paths,
-                    lora_scales=config_args.lora_scales,
-                )
-            elif config_args.model_type == "embeddings":
-                handler = MLXEmbeddingsHandler(
-                    model_path=model_identifier,
-                )
-            elif config_args.model_type == "image-edit":
-                ensure_image_handler_available(config_args.model_type)
-                handler = MLXFluxHandler(
-                    model_path=model_identifier,
-                    quantize=config_args.quantize,
-                    config_name=config_args.config_name,
-                    lora_paths=config_args.lora_paths,
-                    lora_scales=config_args.lora_scales,
-                )
-            elif config_args.model_type == "whisper":
-                handler = MLXWhisperHandler(
-                    model_path=model_identifier,
-                )
-            else:
-                handler = MLXLMHandler(
-                    model_path=model_identifier,
-                    context_length=config_args.context_length,
-                    enable_auto_tool_choice=config_args.enable_auto_tool_choice,
-                    tool_call_parser=config_args.tool_call_parser,
-                    reasoning_parser=config_args.reasoning_parser,
-                    message_converter=config_args.message_converter,
-                    trust_remote_code=config_args.trust_remote_code,
-                    chat_template_file=config_args.chat_template_file,
-                    debug=config_args.debug,
-                    prompt_cache_size=config_args.prompt_cache_size,
-                    prompt_cache_max_bytes=config_args.prompt_cache_max_bytes,
-                    draft_model_path=config_args.draft_model_path,
-                    num_draft_tokens=config_args.num_draft_tokens,
-                )
-            # Single-model mode historically relies on process-global DEFAULT_*
-            # env fallbacks. Keep that behavior for programmatic setup paths
-            # rather than attaching the dataclass's implicit defaults here.
+            logger.info(
+                f"Initializing MLX handler with model path: {model_cfg.model_path}"
+            )
+
+            handler = create_handler_from_config(model_cfg)
             await handler.initialize(
                 {
                     "timeout": config_args.queue_timeout,
                     "queue_size": config_args.queue_size,
                 }
             )
+
             # Override the model name exposed via /v1/models and accepted
             # in the request ``model`` field when --served-model-name is set.
             if config_args.served_model_name:

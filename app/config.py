@@ -147,6 +147,38 @@ class MLXServerConfig:
         """
         return self.model_path
 
+    def to_model_entry_config(self) -> "ModelEntryConfig":
+        """Convert this single-model CLI config to a ``ModelEntryConfig``.
+
+        This allows ``create_handler_from_config`` to be reused for
+        single-model mode, eliminating the duplicated handler
+        construction logic.
+        """
+        return ModelEntryConfig(
+            model_path=self.model_path,
+            model_type=self.model_type,
+            model_id=self.served_model_name or self.model_path,
+            context_length=self.context_length,
+            queue_timeout=self.queue_timeout,
+            queue_size=self.queue_size,
+            quantize=self.quantize,
+            config_name=self.config_name,
+            lora_paths=self.lora_paths,
+            lora_scales=self.lora_scales,
+            disable_auto_resize=self.disable_auto_resize,
+            enable_auto_tool_choice=self.enable_auto_tool_choice,
+            tool_call_parser=self.tool_call_parser,
+            reasoning_parser=self.reasoning_parser,
+            message_converter=self.message_converter,
+            trust_remote_code=self.trust_remote_code,
+            chat_template_file=self.chat_template_file,
+            debug=self.debug,
+            prompt_cache_size=self.prompt_cache_size,
+            prompt_cache_max_bytes=self.prompt_cache_max_bytes,
+            draft_model_path=self.draft_model_path,
+            num_draft_tokens=self.num_draft_tokens,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Multi-model YAML configuration
