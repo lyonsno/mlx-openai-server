@@ -19,6 +19,8 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 - [Quick Start](#quick-start)
 - [Server Parameters](#server-parameters)
 - [Launching Multiple Models](#launching-multiple-models)
+  - [Custom Model Name](#custom-model-name-single-model-mode)
+  - [Dynamic Model Swapping](#dynamic-model-swapping-on-demand-loading)
 - [Supported Model Types](#supported-model-types)
 - [Common Use Cases](#common-use-cases)
 - [Featured Launch: MiniMax-M2.5-Uncensored-4bit](#featured-launch-minimax-m25-uncensored-4bit)
@@ -152,6 +154,8 @@ mlx-openai-server launch \
 | | | | | **Prompt cache** (lm only) |
 | `--prompt-cache-size` | No | int | 10 | Maximum number of prompt KV cache entries to store |
 | `--max-bytes` | No | int | (unbounded) | Maximum total bytes retained by prompt KV caches before eviction |
+| | | | | **Server options** |
+| `--served-model-name` | No | string | — | Override the model name returned by `/v1/models` and accepted in request `model` field |
 | | | | | **Advanced options** |
 | `--lora-paths` | No | string | — | Comma-separated LoRA adapter paths (image models) |
 | `--lora-scales` | No | string | — | Comma-separated LoRA scales (must match paths) |
@@ -187,6 +191,8 @@ Create a YAML file with a `server` section (host, port, logging) and a `models` 
 | `queue_timeout`, `queue_size` | No | Per-model queue settings |
 | `prompt_cache_size` | No | Max prompt KV cache entries (lm only; default: 10) |
 | `prompt_cache_max_bytes` | No | Max total bytes for prompt KV caches before eviction (lm only) |
+| `on_demand` | No | Enable dynamic swapping — model is loaded on first request, unloaded after idle (default: `false`) |
+| `on_demand_idle_timeout` | No | Seconds to wait before unloading an idle on-demand model (default: `60`) |
 
 Example `config.yaml`:
 
@@ -225,6 +231,41 @@ models:
 ```
 
 A full example is in `examples/config.yaml`.
+
+### Custom Model Name (Single-Model Mode)
+
+Use `--served-model-name` to override the model identifier returned by `/v1/models` and accepted in the `model` request field:
+
+```bash
+mlx-openai-server launch \
+  --model-path mlx-community/Qwen3-Coder-Next-4bit \
+  --served-model-name my-local-model
+```
+
+Clients can then use `"model": "my-local-model"` in their requests. If omitted, the model path is used as the identifier.
+
+### Dynamic Model Swapping (On-Demand Loading)
+
+For large models you don't want to keep in memory permanently, set `on_demand: true` in the YAML config. The model will appear in `/v1/models` but won't be loaded until a request arrives. After the request completes and the model is idle, it is automatically unloaded.
+
+Only one on-demand model is loaded at a time — requesting a different on-demand model will unload the current one first.
+
+```yaml
+models:
+  # Always loaded
+  - model_path: mlx-community/GLM-4.7-Flash-8bit
+    model_type: lm
+    model_id: glm-4.7-flash
+
+  # Loaded on first request, unloaded after 120s idle
+  - model_path: mlx-community/Qwen3.5-32B-4bit
+    model_type: lm
+    model_id: qwen3.5-32b
+    on_demand: true
+    on_demand_idle_timeout: 120
+```
+
+> **Note:** The first request to an on-demand model will be slower as the model needs to be loaded into memory. Subsequent requests (within the idle timeout) are served at normal speed.
 
 ### Multi-handler process isolation (HandlerProcessProxy)
 
