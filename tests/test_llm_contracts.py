@@ -217,12 +217,9 @@ class TestLLMContract:
         # Build detailed status message
         if model_id:
             assert status in ["ok", "healthy", "ready"]  # Basic health check
-            assert model_status in [
-                "loaded",
-                "ready",
-                "ok",
-                "unknown",
-            ]  # Model status can vary
+            assert model_status in ["loaded", "ready", "ok", "unknown"] or model_status.startswith(
+                "registered"
+            )  # Model status can vary
         else:
             assert status in ["ok", "healthy", "ready"]
 

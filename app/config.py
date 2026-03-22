@@ -13,9 +13,17 @@ these structures.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+import json
+import math
 from pathlib import Path
 
+try:
+    from huggingface_hub import snapshot_download
+except ImportError:
+    snapshot_download = None
 from loguru import logger
 
 from .message_converters import resolve_message_converter_name
@@ -271,6 +279,191 @@ class MultiModelServerConfig:
     no_log_file: bool = False
 
 
+_GENERATION_CONFIG_TO_DEFAULT_FIELD: dict[str, str] = {
+    "max_new_tokens": "default_max_tokens",
+    "temperature": "default_temperature",
+    "top_p": "default_top_p",
+    "top_k": "default_top_k",
+    "min_p": "default_min_p",
+    "repetition_penalty": "default_repetition_penalty",
+}
+
+
+def _coerce_generation_config_float(value: object) -> float:
+    """Coerce a generation-config value to a finite float.
+
+    Bools are rejected even though Python treats them as ints.
+    """
+
+    if isinstance(value, bool):
+        raise TypeError("boolean values are not valid floats")
+
+    if isinstance(value, (int, float)):
+        result = float(value)
+    elif isinstance(value, str):
+        result = float(value.strip())
+    else:
+        raise TypeError("unsupported float value type")
+
+    if not math.isfinite(result):
+        raise ValueError("float value must be finite")
+    return result
+
+
+def _coerce_generation_config_int(value: object) -> int:
+    """Coerce a generation-config value to an integer without loss.
+
+    Accepts integral ints, integral floats, and integral numeric strings.
+    Rejects bools and lossy conversions such as ``1.7``.
+    """
+
+    if isinstance(value, bool):
+        raise TypeError("boolean values are not valid integers")
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError("float value must be integral")
+        return int(value)
+
+    if isinstance(value, str):
+        try:
+            parsed = Decimal(value.strip())
+        except InvalidOperation as exc:
+            raise ValueError("string value must represent an integer") from exc
+        if not parsed.is_finite() or parsed != parsed.to_integral_value():
+            raise ValueError("string value must represent an integer")
+        return int(parsed)
+
+    raise TypeError("unsupported integer value type")
+
+
+_GENERATION_CONFIG_COERCERS: dict[str, Callable[[object], int | float]] = {
+    "default_max_tokens": _coerce_generation_config_int,
+    "default_temperature": _coerce_generation_config_float,
+    "default_top_p": _coerce_generation_config_float,
+    "default_top_k": _coerce_generation_config_int,
+    "default_min_p": _coerce_generation_config_float,
+    "default_repetition_penalty": _coerce_generation_config_float,
+}
+
+
+def _resolve_generation_config_model_dir(model_path: str) -> Path | None:
+    """Resolve a model path to a directory that may contain generation config.
+
+    Local filesystem directories are returned directly. Hugging Face repo IDs
+    are resolved best-effort from the local Hugging Face cache only so
+    generation-config seeding does not introduce network/download work on the
+    main startup path.
+    """
+
+    local_path = Path(model_path)
+    if local_path.is_dir():
+        return local_path
+
+    if snapshot_download is None:
+        return None
+
+    try:
+        snapshot_dir = snapshot_download(
+            repo_id=model_path,
+            allow_patterns="generation_config.json",
+            local_files_only=True,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"Failed to resolve generation config snapshot for model '{model_path}': {exc}"
+        )
+        return None
+
+    resolved_path = Path(snapshot_dir)
+    if (resolved_path / "generation_config.json").exists():
+        return resolved_path
+    return None
+
+
+def resolve_generation_config_model_dir(model_path: str) -> Path | None:
+    """Public wrapper for best-effort generation-config path resolution."""
+
+    return _resolve_generation_config_model_dir(model_path)
+
+
+def _seed_model_defaults_from_generation_config(
+    model_cfg: ModelEntryConfig,
+    model_dir: Path | None = None,
+) -> None:
+    """Best-effort seed missing model defaults from ``generation_config.json``.
+
+    Explicit YAML defaults remain authoritative; this helper only fills
+    fields that are still ``None`` on the ``ModelEntryConfig``.
+    Missing or malformed generation-config files are tolerated so
+    request-time env fallback remains available.
+    """
+
+    if model_cfg.model_type not in {"lm", "multimodal"}:
+        return
+
+    generation_config_root = model_dir or Path(model_cfg.model_path)
+    generation_config_path = generation_config_root / "generation_config.json"
+    if not generation_config_path.exists():
+        return
+
+    try:
+        generation_config = json.loads(generation_config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.warning(
+            f"Failed to read generation config for model '{model_cfg.model_path}' "
+            f"from '{generation_config_path}': {exc}"
+        )
+        return
+
+    if not isinstance(generation_config, dict):
+        logger.warning(
+            f"Ignoring generation config for model '{model_cfg.model_path}' "
+            "because it is not a JSON object."
+        )
+        return
+
+    for source_key, target_field in _GENERATION_CONFIG_TO_DEFAULT_FIELD.items():
+        if getattr(model_cfg, target_field) is not None:
+            continue
+        source_value = generation_config.get(source_key)
+        if source_value is not None:
+            try:
+                coerced_value = _GENERATION_CONFIG_COERCERS[target_field](source_value)
+            except (KeyError, TypeError, ValueError):
+                logger.warning(
+                    f"Ignoring generation config value for model '{model_cfg.model_path}' "
+                    f"because '{source_key}={source_value!r}' is not a valid "
+                    f"{target_field} value."
+                )
+                continue
+            setattr(model_cfg, target_field, coerced_value)
+
+
+def has_missing_generation_config_defaults(model_cfg: ModelEntryConfig) -> bool:
+    """Return whether mapped generation-config-backed defaults are still missing."""
+
+    if model_cfg.model_type not in {"lm", "multimodal"}:
+        return False
+
+    return any(
+        getattr(model_cfg, target_field) is None
+        for target_field in _GENERATION_CONFIG_TO_DEFAULT_FIELD.values()
+    )
+
+
+def seed_model_defaults_from_generation_config(
+    model_cfg: ModelEntryConfig,
+    model_dir: Path | None = None,
+) -> None:
+    """Public wrapper for best-effort generation-config default seeding."""
+
+    _seed_model_defaults_from_generation_config(model_cfg, model_dir=model_dir)
+
+
 def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
     """Parse a YAML config file into a ``MultiModelServerConfig``.
 
@@ -338,6 +531,11 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
                 "Each model must have a unique model_id."
             )
             raise ValueError(msg)
+        if has_missing_generation_config_defaults(model_cfg):
+            _seed_model_defaults_from_generation_config(
+                model_cfg,
+                model_dir=_resolve_generation_config_model_dir(model_cfg.model_path),
+            )
         seen_ids.add(model_cfg.model_id)
         model_entries.append(model_cfg)
 

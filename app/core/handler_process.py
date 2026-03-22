@@ -47,6 +47,8 @@ import uuid
 
 from loguru import logger
 
+from app import config as config_module
+
 # ---------------------------------------------------------------------------
 # IPC protocol constants
 # ---------------------------------------------------------------------------
@@ -373,9 +375,15 @@ class HandlerProcessProxy:
         self.handler_type = self._MODEL_TYPE_TO_HANDLER_TYPE.get(model_type, model_type)
         self.model_created: int = 0
 
-        self._model_cfg_dict = model_cfg_dict
+        seeded_model_cfg = config_module.ModelEntryConfig(**model_cfg_dict)
+        if config_module.has_missing_generation_config_defaults(seeded_model_cfg):
+            config_module.seed_model_defaults_from_generation_config(
+                seeded_model_cfg,
+                model_dir=config_module.resolve_generation_config_model_dir(model_path),
+            )
+        self._model_cfg_dict = seeded_model_cfg.__dict__.copy()
         for field_name in self._SAMPLING_DEFAULT_FIELDS:
-            setattr(self, field_name, model_cfg_dict.get(field_name))
+            setattr(self, field_name, self._model_cfg_dict.get(field_name))
         self._uses_model_sampling_defaults = True
 
         # Use the ``spawn`` start method for clean Metal runtime isolation.
@@ -390,14 +398,55 @@ class HandlerProcessProxy:
         self._reader_thread: threading.Thread | None = None
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._start_lock: asyncio.Lock | None = None
+        self._started = False
 
         # RPC timeouts and streaming backpressure (set in start() from queue_config).
         self._rpc_timeout: float = 600.0
         self._stream_queue_size: int = 64
+        self._lazy_queue_config: dict[str, Any] = {
+            "max_concurrency": int(self._model_cfg_dict.get("max_concurrency", 1)),
+            "timeout": int(self._model_cfg_dict.get("queue_timeout", 300)),
+            "queue_size": int(self._model_cfg_dict.get("queue_size", 100)),
+        }
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def _has_live_process(self) -> bool:
+        """Return whether a started handler subprocess is currently available."""
+
+        if self._process is None or not self._started:
+            return False
+
+        if hasattr(self._process, "is_alive"):
+            try:
+                return bool(self._process.is_alive())
+            except (AssertionError, OSError, ValueError):
+                return False
+
+        return True
+
+    async def _ensure_started(self) -> None:
+        """Start the handler subprocess on demand, coalescing concurrent first hits."""
+
+        if self._has_live_process():
+            return
+
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+
+        async with self._start_lock:
+            if self._has_live_process():
+                return
+
+            if not self._lazy_queue_config:
+                msg = f"No lazy queue config available for handler '{self.model_id}'"
+                raise RuntimeError(msg)
+
+            await self.start(dict(self._lazy_queue_config))
+            self._started = True
 
     async def start(self, queue_config: dict[str, Any]) -> None:
         """Spawn the handler subprocess and wait for it to become ready.
@@ -413,10 +462,26 @@ class HandlerProcessProxy:
         RuntimeError
             If the child process fails to initialize within 300 s.
         """
+        if self._has_live_process():
+            return
+
+        if self._reader_thread and self._reader_thread.is_alive():
+            # A dead child can leave the previous reader thread polling the
+            # shared response queue. Stop it before starting a replacement.
+            self._running = False
+            self._reader_thread.join(timeout=2)
+        self._reader_thread = None
+
+        self._lazy_queue_config = dict(queue_config)
         self._loop = asyncio.get_running_loop()
         self._running = True
+        self._started = False
         self._rpc_timeout = float(queue_config.get("timeout", 300))
         self._stream_queue_size = int(queue_config.get("stream_queue_size", 64))
+
+        # Register the ready waiter before anything can emit the ready signal.
+        ready_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._pending["__ready__"] = ready_queue
 
         # Start the response reader thread.
         self._reader_thread = threading.Thread(
@@ -439,14 +504,7 @@ class HandlerProcessProxy:
             name=f"handler-{self.model_id}",
         )
         self._process.start()
-        logger.info(
-            f"Spawned handler process for '{self.model_id}' "
-            f"(pid={self._process.pid})"
-        )
-
-        # Wait for the ready signal.
-        ready_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._pending["__ready__"] = ready_queue
+        logger.info(f"Spawned handler process for '{self.model_id}' (pid={self._process.pid})")
 
         try:
             try:
@@ -471,6 +529,7 @@ class HandlerProcessProxy:
             raise
 
         self.model_created = int(time.time())
+        self._started = True
         logger.info(f"Handler process for '{self.model_id}' is ready")
 
     def _response_reader(self) -> None:
@@ -503,14 +562,10 @@ class HandlerProcessProxy:
             pending = self._pending.get(req_id)
             if pending and self._loop:
                 try:
-                    future = asyncio.run_coroutine_threadsafe(
-                        pending.put(response), self._loop
-                    )
+                    future = asyncio.run_coroutine_threadsafe(pending.put(response), self._loop)
                     future.result(timeout=60)
                 except concurrent.futures.TimeoutError:
-                    logger.warning(
-                        f"Timeout delivering stream chunk for {req_id}"
-                    )
+                    logger.warning(f"Timeout delivering stream chunk for {req_id}")
                 except Exception:
                     if self._running:
                         logger.debug(
@@ -544,6 +599,8 @@ class HandlerProcessProxy:
         fastapi.HTTPException
             When the child reports an error.
         """
+        await self._ensure_started()
+
         req_id = str(uuid.uuid4())
         result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pending[req_id] = result_queue
@@ -593,9 +650,12 @@ class HandlerProcessProxy:
         fastapi.HTTPException
             When the child reports an error.
         """
+        await self._ensure_started()
+
         req_id = str(uuid.uuid4())
         result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._stream_queue_size)
         self._pending[req_id] = result_queue
+        stream_completed = False
 
         try:
             await asyncio.to_thread(
@@ -613,18 +673,19 @@ class HandlerProcessProxy:
                 response = await asyncio.wait_for(result_queue.get(), timeout=self._rpc_timeout)
 
                 if response["type"] == _STREAM_END:
+                    stream_completed = True
                     break
                 if response["type"] == "error":
+                    stream_completed = True
                     self._raise_remote_error(response)
 
                 yield response["value"]
         finally:
             self._pending.pop(req_id, None)
-            # Signal child to stop forwarding chunks (e.g. client disconnect).
-            try:
-                self._control_queue.put({"id": req_id, "method": _CANCEL})
-            except (BrokenPipeError, EOFError, OSError):
-                pass
+            if not stream_completed:
+                # Signal child to stop forwarding chunks (e.g. client disconnect).
+                with suppress(BrokenPipeError, EOFError, OSError):
+                    self._control_queue.put({"id": req_id, "method": _CANCEL})
 
     @staticmethod
     def _raise_remote_error(response: dict[str, Any]) -> None:
@@ -705,11 +766,29 @@ class HandlerProcessProxy:
     async def get_queue_stats(self) -> dict[str, Any]:
         """Get inference worker statistics from the subprocess handler.
 
+        When the child process has not been started yet, return
+        registration metadata instead of warming the model as a side
+        effect of observability traffic.
+
         Returns
         -------
         dict[str, Any]
-            Worker and queue statistics.
+            Worker queue statistics, or lazy-start registration metadata
+            when the child is not yet loaded.
         """
+        if not self._has_live_process():
+            return {
+                "queue_stats": {
+                    "loaded": False,
+                    "model_id": self.model_id,
+                    "model_status": "registered",
+                    "validation_status": "pending_first_request",
+                    "max_concurrency": self._lazy_queue_config.get("max_concurrency"),
+                    "queue_size": self._lazy_queue_config.get("queue_size"),
+                    "timeout": self._lazy_queue_config.get("timeout"),
+                }
+            }
+
         return await self._call("get_queue_stats")
 
     # -- LM handler methods --
@@ -955,6 +1034,9 @@ class HandlerProcessProxy:
         """
         if not self._process or not self._process.is_alive():
             self._running = False
+            self._started = False
+            self._process = None
+            self._reader_thread = None
             return
 
         # -- Phase 1: Request a graceful shutdown via the IPC queue. --
@@ -988,6 +1070,7 @@ class HandlerProcessProxy:
             self._pending.pop(req_id, None)
 
         self._running = False
+        self._started = False
 
         # -- Phase 2: Ensure the child process exits. --
         if not graceful and self._process.is_alive():
@@ -1013,4 +1096,6 @@ class HandlerProcessProxy:
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2)
 
+        self._process = None
+        self._reader_thread = None
         logger.info(f"Handler process for '{self.model_id}' shut down successfully")

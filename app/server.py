@@ -30,7 +30,14 @@ import mlx.core as mx
 import uvicorn
 
 from .api.endpoints import router
-from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
+from .config import (
+    MLXServerConfig,
+    ModelEntryConfig,
+    MultiModelServerConfig,
+    has_missing_generation_config_defaults,
+    resolve_generation_config_model_dir,
+    seed_model_defaults_from_generation_config,
+)
 from .core.handler_process import HandlerProcessProxy
 from .core.model_registry import ModelRegistry
 from .handler import MLXFluxHandler
@@ -46,6 +53,9 @@ MFLUX_INSTALL_HINT = (
     "`pip install git+https://github.com/cubist38/mflux.git`."
 )
 
+_resolve_generation_config_model_dir = resolve_generation_config_model_dir
+_seed_model_defaults_from_generation_config = seed_model_defaults_from_generation_config
+
 
 def ensure_image_handler_available(model_type: str) -> None:
     """Validate that optional image generation support is installed."""
@@ -56,6 +66,7 @@ def ensure_image_handler_available(model_type: str) -> None:
         return
 
     raise RuntimeError(MFLUX_INSTALL_HINT)
+
 
 _SAMPLING_DEFAULT_FIELDS: tuple[str, ...] = (
     "default_max_tokens",
@@ -320,6 +331,11 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         is invalid for the given type.
     """
     model_path = model_cfg.model_path
+    if has_missing_generation_config_defaults(model_cfg):
+        _seed_model_defaults_from_generation_config(
+            model_cfg,
+            model_dir=_resolve_generation_config_model_dir(model_path),
+        )
 
     if model_cfg.model_type == "multimodal":
         return _attach_sampling_defaults(
@@ -410,12 +426,13 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
 def create_multi_lifespan(config: MultiModelServerConfig):
     """Create a FastAPI lifespan for multi-handler mode.
 
-    Each model entry in ``config.models`` is spawned in a dedicated
-    subprocess using ``multiprocessing.get_context("spawn")``, preventing
-    MLX Metal/GPU semaphore leaks (see
-    `<https://github.com/ml-explore/mlx/issues/2457>`_).  A
-    ``HandlerProcessProxy`` in the main process forwards requests to
-    the child via multiprocessing queues.
+    Each model entry in ``config.models`` is registered as a dedicated
+    ``HandlerProcessProxy``. The proxy will spawn its subprocess on the
+    first routed request using ``multiprocessing.get_context("spawn")``,
+    preventing MLX Metal/GPU semaphore leaks (see
+    `<https://github.com/ml-explore/mlx/issues/2457>`_). A
+    ``HandlerProcessProxy`` in the main process forwards requests to the
+    child via multiprocessing queues.
 
     The proxies are registered in a ``ModelRegistry`` and attached to
     ``app.state.registry``.  For backward compatibility the first
@@ -434,12 +451,12 @@ def create_multi_lifespan(config: MultiModelServerConfig):
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """FastAPI lifespan that spawns handler subprocesses.
+        """FastAPI lifespan that registers lazy-start handler proxies.
 
-        Each model from the YAML config is loaded in its own spawned
-        subprocess, keeping MLX Metal runtime state fully isolated.
-        A ``HandlerProcessProxy`` is registered in the
-        ``ModelRegistry`` for each model.
+        Each model from the YAML config is registered as a lazy-start
+        proxy. The child subprocess is only spawned when a request first
+        targets that model, while ``/v1/models`` and routing metadata
+        remain available immediately at startup.
 
         Parameters
         ----------
@@ -452,7 +469,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
             for model_cfg in config.models:
                 model_id = model_cfg.model_id  # guaranteed non-None after __post_init__
                 logger.info(
-                    f"Spawning handler process for model '{model_id}' "
+                    f"Registering lazy-start handler for model '{model_id}' "
                     f"(type={model_cfg.model_type}, path={model_cfg.model_path})"
                 )
 
@@ -475,8 +492,9 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                     "queue_size": model_cfg.queue_size,
                 }
 
-                # Spawn the child process and wait for it to load the model.
-                await proxy.start(queue_config)
+                # Preserve per-model queue settings for the eventual
+                # deferred cold start without warming the child now.
+                setattr(proxy, "_lazy_queue_config", dict(queue_config))
 
                 await registry.register_model(
                     model_id=model_id,
@@ -484,7 +502,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                     model_type=model_cfg.model_type,
                     context_length=model_cfg.context_length,
                 )
-                logger.info(f"Model '{model_id}' spawned and registered successfully")
+                logger.info(f"Model '{model_id}' registered successfully")
 
             # Store registry on app state for endpoint access
             app.state.registry = registry
@@ -496,7 +514,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
 
             logger.info(
                 f"Multi-handler initialization complete. "
-                f"{registry.get_model_count()} model(s) spawned."
+                f"{registry.get_model_count()} model(s) registered."
             )
 
         except Exception as e:

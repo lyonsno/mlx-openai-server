@@ -126,6 +126,8 @@ def _apply_sampling_env(config: MLXServerConfig) -> None:
         os.environ["DEFAULT_TOP_K"] = str(config.default_top_k)
     if config.default_min_p is not None:
         os.environ["DEFAULT_MIN_P"] = str(config.default_min_p)
+    if config.default_repetition_penalty is not None:
+        os.environ["DEFAULT_REPETITION_PENALTY"] = str(config.default_repetition_penalty)
     if config.default_presence_penalty is not None:
         os.environ["DEFAULT_PRESENCE_PENALTY"] = str(config.default_presence_penalty)
     if config.default_xtc_probability is not None:

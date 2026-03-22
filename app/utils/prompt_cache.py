@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
-import copy
 from collections import deque
+import copy
 from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
 from mlx_lm.models.cache import can_trim_prompt_cache, trim_prompt_cache
+
+
+class _TrackedPromptCache(list[Any]):
+    """List-like prompt cache carrying source-entry metadata across reuse."""
+
+    def __init__(
+        self,
+        prompt_cache: list[Any],
+        *,
+        stale_source_tokens: tuple[int, ...] | None = None,
+    ) -> None:
+        """Initialize the tracked prompt cache wrapper."""
+        super().__init__(prompt_cache)
+        self.stale_source_tokens = stale_source_tokens
 
 
 class LRUPromptCache:
@@ -139,6 +153,7 @@ class LRUPromptCache:
         ----------
         tokens_ids : list[int]
             Token sequence to search for.
+
         Returns
         -------
         SearchResult
@@ -182,7 +197,6 @@ class LRUPromptCache:
 
         return self.SearchResult(None, shorter, longer, common_prefix)
 
-
     def fetch_nearest_cache(
         self,
         tokens_ids: list[int],
@@ -193,6 +207,7 @@ class LRUPromptCache:
         ----------
         tokens_ids : list[int]
             Token sequence to find a cache for.
+
         Returns
         -------
         tuple[list[Any] | None, list[int]]
@@ -208,7 +223,10 @@ class LRUPromptCache:
         if result.longer is not None and result.common_prefix > short_length:
             cache_entry = self._get(result.longer)
             if can_trim_prompt_cache(cache_entry.prompt_cache):
-                cache = copy.deepcopy(cache_entry.prompt_cache)
+                cache = _TrackedPromptCache(
+                    copy.deepcopy(cache_entry.prompt_cache),
+                    stale_source_tokens=tuple(result.longer),
+                )
                 prefix = min(len(tokens_ids) - 1, result.common_prefix)
                 num_to_trim = len(result.longer) - prefix
                 trim_prompt_cache(cache, num_to_trim)
@@ -227,6 +245,7 @@ class LRUPromptCache:
         ----------
         tokens_ids : list[int]
             Token sequence identifying the cache entry.
+
         Returns
         -------
         CacheEntry
@@ -241,6 +260,15 @@ class LRUPromptCache:
         for tok in tokens_ids:
             current = current[tok]
         return current["cache"]
+
+    def _contains(self, tokens_ids: list[int]) -> bool:
+        """Return whether the cache currently has an entry for ``tokens_ids``."""
+        current = self._cache
+        for tok in tokens_ids:
+            if tok not in current:
+                return False
+            current = current[tok]
+        return "cache" in current
 
     def _delete(self, tokens_ids: list[int]) -> None:
         """Delete a cache entry and clean up empty trie nodes.
@@ -282,6 +310,15 @@ class LRUPromptCache:
             default ``False``.
         """
         tokens_tuple = tuple(tokens_ids)
+        stale_source_tokens = getattr(prompt_cache, "stale_source_tokens", None)
+        reinserts_source_prefix = (
+            stale_source_tokens is not None
+            and len(tokens_tuple) <= len(stale_source_tokens)
+            and stale_source_tokens[: len(tokens_tuple)] == tokens_tuple
+        )
+
+        if reinserts_source_prefix:
+            prompt_cache.stale_source_tokens = None
 
         is_trimmable = can_trim_prompt_cache(prompt_cache)
         current = self._cache
@@ -307,7 +344,7 @@ class LRUPromptCache:
             oldest_tokens = self._lru.pop()
             self._delete(list(oldest_tokens))
 
-        while self._n_bytes > self.max_bytes and len(self._lru) > 1:
+        while self._n_bytes > self.max_bytes and len(self._lru) > 0:
             oldest_tokens = self._lru.pop()
             self._delete(list(oldest_tokens))
 
@@ -344,8 +381,10 @@ class LRUPromptCache:
             latest_checkpoint_tokens,
         )
 
+
 if __name__ == "__main__":
     from app.models.mlx_lm import MLX_LM
+
     model_path = "mlx-community/Qwen3-Coder-Next-8bit"
     draft_model_path = "mlx-community/Qwen3-Coder-Next-4bit"
     model = MLX_LM(model_path, draft_model_path)
@@ -374,7 +413,6 @@ if __name__ == "__main__":
                 first_token = False
             cache_key.append(chunk.token)
 
-
     prompt_cache.insert_cache(cache_key, cache)
 
     start_time = time.time()
@@ -383,7 +421,7 @@ if __name__ == "__main__":
     input_prompt_2 = model.create_input_prompt([{"role": "user", "content": prompt_2}], {})
     input_ids_2 = model.encode_prompt(input_prompt_2)
     cache, rest_input_ids_2 = prompt_cache.fetch_nearest_cache(input_ids_2)
-   
+
     if cache is None:
         cache = model.create_prompt_cache()
     # Use full input_ids for cache_key, not rest_input_ids
