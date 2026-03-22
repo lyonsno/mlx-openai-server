@@ -325,6 +325,16 @@ class MLXLMHandler:
             boundary = self._compute_checkpoint_boundary(
                 refined_messages, input_ids, chat_template_kwargs
             )
+            # For single-turn messages _compute_checkpoint_boundary
+            # returns None because there is no previous-message
+            # boundary.  Fall back to checkpointing all-but-the-last
+            # token so the next identical request can reuse the
+            # prefill via a "shorter" trie hit.  We keep at least one
+            # remaining token so the model's generate() call still
+            # receives a non-empty input_ids.
+            if boundary is None and len(input_ids) > 1:
+                boundary = len(input_ids) - 1
+
             cached_prefix_len = len(input_ids) - len(rest_input_ids)
             if boundary is not None and boundary > cached_prefix_len:
                 # checkpoint_position is relative to rest_input_ids
