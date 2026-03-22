@@ -77,6 +77,7 @@ class _InferenceContext:
     rest_input_ids: list[int]
     cache: list[Any]
     cache_key: list[int]
+    total_input_tokens: int
     total_cached_tokens: int
     model_params: dict[str, Any]
     parsers_result: Any
@@ -386,6 +387,7 @@ class MLXLMHandler:
             rest_input_ids=rest_input_ids,
             cache=cache,
             cache_key=cache_key,
+            total_input_tokens=total_input_tokens,
             total_cached_tokens=total_cached_tokens,
             model_params=model_params,
             parsers_result=parsers_result,
@@ -415,6 +417,7 @@ class MLXLMHandler:
             ctx = await self._build_inference_context(request)
             cache = ctx.cache
             cache_key = ctx.cache_key
+            total_input_tokens = ctx.total_input_tokens
             total_cached_tokens = ctx.total_cached_tokens
             model_params = ctx.model_params
             parsers_result = ctx.parsers_result
@@ -724,7 +727,7 @@ class MLXLMHandler:
 
                         yield text
 
-            total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
+            total_tokens = total_input_tokens + final_chunk.generation_tokens
             self.prompt_cache.insert_cache(cache_key, cache)
             cache_inserted = True
 
@@ -732,7 +735,7 @@ class MLXLMHandler:
                 self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(raw_text)
                 log_debug_stats(
-                    final_chunk.prompt_tokens,
+                    total_input_tokens,
                     final_chunk.generation_tokens,
                     total_tokens,
                     final_chunk.generation_tps,
@@ -741,7 +744,7 @@ class MLXLMHandler:
 
             yield {
                 "__usage__": UsageInfo(
-                    prompt_tokens=final_chunk.prompt_tokens,
+                    prompt_tokens=total_input_tokens,
                     completion_tokens=final_chunk.generation_tokens,
                     total_tokens=total_tokens,
                     prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),
@@ -792,6 +795,7 @@ class MLXLMHandler:
             ctx = await self._build_inference_context(request)
             model_params = ctx.model_params
             parsers_result = ctx.parsers_result
+            total_input_tokens = ctx.total_input_tokens
             total_cached_tokens = ctx.total_cached_tokens
 
             request_data = {
@@ -909,7 +913,7 @@ class MLXLMHandler:
             else:
                 parsed_response["content"] = response_text
 
-            total_tokens = response.prompt_tokens + response.generation_tokens
+            total_tokens = total_input_tokens + response.generation_tokens
 
             if self.debug and isinstance(parsed_response.get("tool_calls"), list):
                 for tool_call in parsed_response["tool_calls"]:
@@ -924,7 +928,7 @@ class MLXLMHandler:
                 self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(response.text)
                 log_debug_stats(
-                    response.prompt_tokens,
+                    total_input_tokens,
                     response.generation_tokens,
                     total_tokens,
                     response.generation_tps,
@@ -932,7 +936,7 @@ class MLXLMHandler:
                 )
 
             usage = UsageInfo(
-                prompt_tokens=response.prompt_tokens,
+                prompt_tokens=total_input_tokens,
                 completion_tokens=response.generation_tokens,
                 total_tokens=total_tokens,
                 prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),
