@@ -35,6 +35,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 import concurrent.futures
 from contextlib import suppress
+from dataclasses import fields
 import multiprocessing as mp
 import os
 import queue
@@ -350,6 +351,22 @@ class HandlerProcessProxy:
         "default_repetition_context_size",
     )
 
+    @staticmethod
+    def _serialize_model_config(
+        model_cfg: config_module.ModelEntryConfig,
+    ) -> dict[str, Any]:
+        """Serialize only declarative ``ModelEntryConfig`` init fields.
+
+        This intentionally excludes runtime/transient attributes that may be
+        attached in ``__post_init__`` or later.
+        """
+
+        return {
+            field_info.name: getattr(model_cfg, field_info.name)
+            for field_info in fields(config_module.ModelEntryConfig)
+            if field_info.init
+        }
+
     def __init__(
         self,
         model_cfg_dict: dict[str, Any],
@@ -381,7 +398,7 @@ class HandlerProcessProxy:
                 seeded_model_cfg,
                 model_dir=config_module.resolve_generation_config_model_dir(model_path),
             )
-        self._model_cfg_dict = seeded_model_cfg.__dict__.copy()
+        self._model_cfg_dict = self._serialize_model_config(seeded_model_cfg)
         for field_name in self._SAMPLING_DEFAULT_FIELDS:
             setattr(self, field_name, self._model_cfg_dict.get(field_name))
         self._uses_model_sampling_defaults = True
@@ -491,30 +508,28 @@ class HandlerProcessProxy:
         )
         self._reader_thread.start()
 
-        # Spawn the child process.
-        self._process = self._ctx.Process(
-            target=_handler_worker,
-            args=(
-                self._model_cfg_dict,
-                queue_config,
-                self._request_queue,
-                self._response_queue,
-                self._control_queue,
-            ),
-            name=f"handler-{self.model_id}",
-        )
-        self._process.start()
-        logger.info(f"Spawned handler process for '{self.model_id}' (pid={self._process.pid})")
-
         try:
+            # Spawn the child process.
+            self._process = self._ctx.Process(
+                target=_handler_worker,
+                args=(
+                    self._model_cfg_dict,
+                    queue_config,
+                    self._request_queue,
+                    self._response_queue,
+                    self._control_queue,
+                ),
+                name=f"handler-{self.model_id}",
+            )
+            self._process.start()
+            logger.info(f"Spawned handler process for '{self.model_id}' (pid={self._process.pid})")
+
             try:
                 response = await asyncio.wait_for(ready_queue.get(), timeout=300)
             except TimeoutError as exc:
                 raise RuntimeError(
                     f"Handler process for '{self.model_id}' did not become ready within 300 s"
                 ) from exc
-            finally:
-                self._pending.pop("__ready__", None)
 
             if not response.get("success"):
                 error_msg = response.get("error", "unknown error")
@@ -527,6 +542,8 @@ class HandlerProcessProxy:
             except Exception:
                 logger.exception(f"Failed to rollback startup for '{self.model_id}'")
             raise
+        finally:
+            self._pending.pop("__ready__", None)
 
         self.model_created = int(time.time())
         self._started = True
@@ -1032,9 +1049,22 @@ class HandlerProcessProxy:
         up concurrently via ``asyncio.gather`` without blocking the
         event loop.
         """
-        if not self._process or not self._process.is_alive():
+
+        def _process_is_alive() -> bool:
+            """Safely check whether the child process is alive."""
+
+            if self._process is None:
+                return False
+            try:
+                return bool(self._process.is_alive())
+            except (AssertionError, OSError, ValueError):
+                return False
+
+        if not _process_is_alive():
             self._running = False
             self._started = False
+            if self._reader_thread and self._reader_thread.is_alive():
+                self._reader_thread.join(timeout=2)
             self._process = None
             self._reader_thread = None
             return
@@ -1073,24 +1103,18 @@ class HandlerProcessProxy:
         self._started = False
 
         # -- Phase 2: Ensure the child process exits. --
-        if not graceful and self._process.is_alive():
+        if not graceful and _process_is_alive():
             self._process.terminate()
 
-        try:
+        with suppress(OSError, ValueError):
             await asyncio.to_thread(self._process.join, 5)
-        except (OSError, ValueError):
-            pass  # Process handle already closed / invalid.
 
-        if self._process.is_alive():
+        if _process_is_alive():
             logger.warning(f"Force-killing handler process for '{self.model_id}'")
-            try:
+            with suppress(OSError, ProcessLookupError):
                 self._process.kill()
-            except (OSError, ProcessLookupError):
-                pass  # Already dead.
-            try:
+            with suppress(OSError, ValueError):
                 await asyncio.to_thread(self._process.join, 3)
-            except (OSError, ValueError):
-                pass
 
         # -- Phase 3: Stop the response reader thread. --
         if self._reader_thread and self._reader_thread.is_alive():

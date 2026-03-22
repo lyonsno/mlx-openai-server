@@ -1204,3 +1204,80 @@ async def test_restart_of_dead_proxy_retires_stale_reader_before_spawning_replac
     assert stale_reader.join_calls == [2]
     assert len(started_threads) == 1
     assert started_threads[0].started is True
+
+
+@pytest.mark.asyncio
+async def test_start_spawn_failure_rolls_back_proxy_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spawn failures should rollback running state, pending ready waiters, and reader thread."""
+
+    model_cfg = ModelEntryConfig(
+        model_path="dummy-whisper-model",
+        model_type="whisper",
+        model_id="dummy-whisper-model",
+    )
+    proxy = HandlerProcessProxy(
+        model_cfg_dict=model_cfg.__dict__.copy(),
+        model_type=model_cfg.model_type,
+        model_path=model_cfg.model_path,
+        model_id=model_cfg.model_id,
+    )
+
+    started_threads: list[_LeakyReaderThread] = []
+
+    class _LeakyReaderThread:
+        """Thread stub that only exits when ``join()`` is explicitly called."""
+
+        def __init__(
+            self,
+            *,
+            target: Any,
+            daemon: bool,
+            name: str,
+        ) -> None:
+            del target, daemon, name
+            self.started = False
+            self.join_calls: list[float | None] = []
+            started_threads.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def is_alive(self) -> bool:
+            return self.started
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_calls.append(timeout)
+            self.started = False
+
+    class _FailingProcess:
+        """Process stub that fails immediately on spawn."""
+
+        def __init__(
+            self,
+            *,
+            target: Any,
+            args: tuple[Any, ...],
+            name: str,
+        ) -> None:
+            del target, args, name
+            self.pid: int | None = None
+
+        def start(self) -> None:
+            msg = "boom-start"
+            raise RuntimeError(msg)
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr(handler_process_module.threading, "Thread", _LeakyReaderThread)
+    proxy._ctx = types.SimpleNamespace(Process=_FailingProcess)  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="boom-start"):
+        await proxy.start({"queue_size": 5, "timeout": 19})
+
+    assert proxy._running is False
+    assert "__ready__" not in proxy._pending
+    assert proxy._reader_thread is None
+    assert len(started_threads) == 1
+    assert started_threads[0].join_calls
+    assert started_threads[0].started is False

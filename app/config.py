@@ -16,17 +16,33 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+import importlib
 import json
 import math
 from pathlib import Path
 
-try:
-    from huggingface_hub import snapshot_download
-except ImportError:
-    snapshot_download = None
 from loguru import logger
 
 from .message_converters import resolve_message_converter_name
+
+snapshot_download: Callable[..., str] | None = None
+
+
+def _get_snapshot_download() -> Callable[..., str] | None:
+    """Resolve ``huggingface_hub.snapshot_download`` lazily on demand."""
+
+    if snapshot_download is not None:
+        return snapshot_download
+
+    try:
+        huggingface_hub = importlib.import_module("huggingface_hub")
+    except ImportError:
+        return None
+
+    resolved_snapshot_download = getattr(huggingface_hub, "snapshot_download", None)
+    if not callable(resolved_snapshot_download):
+        return None
+    return resolved_snapshot_download
 
 
 @dataclass
@@ -363,11 +379,12 @@ def _resolve_generation_config_model_dir(model_path: str) -> Path | None:
     if local_path.is_dir():
         return local_path
 
-    if snapshot_download is None:
+    resolve_snapshot_download = _get_snapshot_download()
+    if resolve_snapshot_download is None:
         return None
 
     try:
-        snapshot_dir = snapshot_download(
+        snapshot_dir = resolve_snapshot_download(
             repo_id=model_path,
             allow_patterns="generation_config.json",
             local_files_only=True,

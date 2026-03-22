@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import types
 from typing import Any
@@ -314,6 +315,23 @@ def test_resolve_generation_config_model_dir_uses_local_files_only_for_repo_ids(
     assert captured_kwargs["local_files_only"] is True
 
 
+def test_import_app_config_does_not_eagerly_import_huggingface_hub() -> None:
+    """Importing ``app.config`` should not eagerly import ``huggingface_hub``."""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import app.config; print('huggingface_hub' in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"
+
+
 def test_load_config_from_yaml_seeds_repo_id_models_from_resolved_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -518,6 +536,33 @@ def test_handler_process_proxy_preserves_seeded_defaults(tmp_path: Path) -> None
         GENERATION_CONFIG_DEFAULTS["repetition_penalty"]
     )
     assert proxy.default_max_tokens == GENERATION_CONFIG_DEFAULTS["max_new_tokens"]
+
+
+def test_handler_process_proxy_drops_runtime_only_model_config_attrs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proxy serialization should exclude runtime-only attrs from ``ModelEntryConfig``."""
+
+    original_post_init = config_module.ModelEntryConfig.__post_init__
+
+    def _patched_post_init(self: config_module.ModelEntryConfig) -> None:
+        original_post_init(self)
+        self._runtime_only_transient = "do-not-serialize"  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(config_module.ModelEntryConfig, "__post_init__", _patched_post_init)
+
+    proxy = HandlerProcessProxy(
+        model_cfg_dict={
+            "model_path": "dummy-whisper-model",
+            "model_type": "whisper",
+            "model_id": "dummy-whisper-model",
+        },
+        model_type="whisper",
+        model_path="dummy-whisper-model",
+        model_id="dummy-whisper-model",
+    )
+
+    assert "_runtime_only_transient" not in proxy._model_cfg_dict
 
 
 def test_handler_process_proxy_coerces_numeric_generation_config_strings_at_runtime_boundary(
