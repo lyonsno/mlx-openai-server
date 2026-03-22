@@ -184,7 +184,7 @@ Create a YAML file with a `server` section (host, port, logging) and a `models` 
 | `model_type` | No | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, `whisper` (default: `lm`) |
 | `model_id` | No | ID used in API requests; defaults to `model_path` if omitted |
 | `context_length` | No | Max context length (lm / multimodal) |
-| `max_concurrency`, `queue_timeout`, `queue_size` | No | Per-model queue settings |
+| `queue_timeout`, `queue_size` | No | Per-model queue settings |
 | `prompt_cache_size` | No | Max prompt KV cache entries (lm only; default: 10) |
 | `prompt_cache_max_bytes` | No | Max total bytes for prompt KV caches before eviction (lm only) |
 
@@ -210,7 +210,6 @@ models:
   # Another language model
   - model_path: mlx-community/Qwen3-Coder-Next-4bit
     model_type: lm
-    max_concurrency: 1
     tool_call_parser: qwen3_coder
 
 

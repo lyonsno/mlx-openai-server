@@ -99,7 +99,6 @@ class MLXLMHandler:
         draft_model_path: str | None = None,
         num_draft_tokens: int = 2,
         context_length: int | None = None,
-        max_concurrency: int = 1,
         enable_auto_tool_choice: bool = False,
         tool_call_parser: str = None,
         reasoning_parser: str = None,
@@ -123,8 +122,6 @@ class MLXLMHandler:
             Number of draft tokens per step when using speculative decoding. Default is 2.
         context_length : int | None
             Maximum context length for the model. If None, uses model default.
-        max_concurrency : int
-            Maximum number of concurrent model inference tasks.
         enable_auto_tool_choice : bool
             Enable automatic tool choice.
         tool_call_parser : str | None

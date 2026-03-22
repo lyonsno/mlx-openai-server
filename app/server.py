@@ -168,7 +168,7 @@ def create_lifespan(config_args: MLXServerConfig):
     Args:
         config_args: Object containing CLI configuration attributes used
             to initialize handlers (e.g., model_type, model_path,
-            max_concurrency, queue_timeout, etc.).
+            queue_timeout, etc.).
 
     Returns:
         Callable: An asynccontextmanager usable as FastAPI ``lifespan``.
@@ -200,7 +200,6 @@ def create_lifespan(config_args: MLXServerConfig):
                 handler = MLXVLMHandler(
                     model_path=model_identifier,
                     context_length=config_args.context_length,
-                    max_concurrency=config_args.max_concurrency,
                     disable_auto_resize=config_args.disable_auto_resize,
                     enable_auto_tool_choice=config_args.enable_auto_tool_choice,
                     tool_call_parser=config_args.tool_call_parser,
@@ -214,7 +213,6 @@ def create_lifespan(config_args: MLXServerConfig):
                 ensure_image_handler_available(config_args.model_type)
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
-                    max_concurrency=config_args.max_concurrency,
                     quantize=config_args.quantize,
                     config_name=config_args.config_name,
                     lora_paths=config_args.lora_paths,
@@ -222,13 +220,12 @@ def create_lifespan(config_args: MLXServerConfig):
                 )
             elif config_args.model_type == "embeddings":
                 handler = MLXEmbeddingsHandler(
-                    model_path=model_identifier, max_concurrency=config_args.max_concurrency
+                    model_path=model_identifier,
                 )
             elif config_args.model_type == "image-edit":
                 ensure_image_handler_available(config_args.model_type)
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
-                    max_concurrency=config_args.max_concurrency,
                     quantize=config_args.quantize,
                     config_name=config_args.config_name,
                     lora_paths=config_args.lora_paths,
@@ -236,13 +233,12 @@ def create_lifespan(config_args: MLXServerConfig):
                 )
             elif config_args.model_type == "whisper":
                 handler = MLXWhisperHandler(
-                    model_path=model_identifier, max_concurrency=config_args.max_concurrency
+                    model_path=model_identifier,
                 )
             else:
                 handler = MLXLMHandler(
                     model_path=model_identifier,
                     context_length=config_args.context_length,
-                    max_concurrency=config_args.max_concurrency,
                     enable_auto_tool_choice=config_args.enable_auto_tool_choice,
                     tool_call_parser=config_args.tool_call_parser,
                     reasoning_parser=config_args.reasoning_parser,
@@ -260,11 +256,18 @@ def create_lifespan(config_args: MLXServerConfig):
             # rather than attaching the dataclass's implicit defaults here.
             await handler.initialize(
                 {
-                    "max_concurrency": config_args.max_concurrency,
                     "timeout": config_args.queue_timeout,
                     "queue_size": config_args.queue_size,
                 }
             )
+            # Override the model name exposed via /v1/models and accepted
+            # in the request ``model`` field when --served-model-name is set.
+            if config_args.served_model_name:
+                handler.model_path = config_args.served_model_name
+                logger.info(
+                    f"Serving model as '{config_args.served_model_name}'"
+                )
+
             logger.info("MLX handler initialized successfully")
             app.state.handler = handler
 
@@ -326,7 +329,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
             MLXVLMHandler(
                 model_path=model_path,
                 context_length=model_cfg.context_length,
-                max_concurrency=model_cfg.max_concurrency,
                 disable_auto_resize=model_cfg.disable_auto_resize,
                 enable_auto_tool_choice=model_cfg.enable_auto_tool_choice,
                 tool_call_parser=model_cfg.tool_call_parser,
@@ -344,7 +346,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         return _attach_sampling_defaults(
             MLXFluxHandler(
                 model_path=model_path,
-                max_concurrency=model_cfg.max_concurrency,
                 quantize=model_cfg.quantize,
                 config_name=model_cfg.config_name,
                 lora_paths=model_cfg.lora_paths,
@@ -358,7 +359,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         return _attach_sampling_defaults(
             MLXFluxHandler(
                 model_path=model_path,
-                max_concurrency=model_cfg.max_concurrency,
                 quantize=model_cfg.quantize,
                 config_name=model_cfg.config_name,
                 lora_paths=model_cfg.lora_paths,
@@ -371,7 +371,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         return _attach_sampling_defaults(
             MLXEmbeddingsHandler(
                 model_path=model_path,
-                max_concurrency=model_cfg.max_concurrency,
             ),
             model_cfg,
         )
@@ -380,7 +379,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         return _attach_sampling_defaults(
             MLXWhisperHandler(
                 model_path=model_path,
-                max_concurrency=model_cfg.max_concurrency,
             ),
             model_cfg,
         )
@@ -390,7 +388,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         MLXLMHandler(
             model_path=model_path,
             context_length=model_cfg.context_length,
-            max_concurrency=model_cfg.max_concurrency,
             enable_auto_tool_choice=model_cfg.enable_auto_tool_choice,
             tool_call_parser=model_cfg.tool_call_parser,
             reasoning_parser=model_cfg.reasoning_parser,
@@ -451,10 +448,6 @@ def create_multi_lifespan(config: MultiModelServerConfig):
         try:
             for model_cfg in config.models:
                 model_id = model_cfg.model_id  # guaranteed non-None after __post_init__
-                logger.info(
-                    f"Spawning handler process for model '{model_id}' "
-                    f"(type={model_cfg.model_type}, path={model_cfg.model_path})"
-                )
 
                 # Serialize the dataclass config to a plain dict for
                 # pickling across the spawn boundary.
@@ -462,18 +455,40 @@ def create_multi_lifespan(config: MultiModelServerConfig):
 
                 model_cfg_dict = asdict(model_cfg)
 
+                queue_config = {
+                    "timeout": model_cfg.queue_timeout,
+                    "queue_size": model_cfg.queue_size,
+                }
+
+                if model_cfg.on_demand:
+                    # Register on-demand model without spawning a subprocess.
+                    # It will be loaded dynamically when a request arrives.
+                    await registry.register_on_demand_model(
+                        model_id=model_id,
+                        model_cfg_dict=model_cfg_dict,
+                        model_type=model_cfg.model_type,
+                        model_path=model_cfg.model_path,
+                        context_length=model_cfg.context_length,
+                        queue_config=queue_config,
+                        idle_timeout=model_cfg.on_demand_idle_timeout,
+                    )
+                    logger.info(
+                        f"Model '{model_id}' registered as on-demand "
+                        f"(will load when first requested)"
+                    )
+                    continue
+
+                logger.info(
+                    f"Spawning handler process for model '{model_id}' "
+                    f"(type={model_cfg.model_type}, path={model_cfg.model_path})"
+                )
+
                 proxy = HandlerProcessProxy(
                     model_cfg_dict=model_cfg_dict,
                     model_type=model_cfg.model_type,
                     model_path=model_cfg.model_path,
                     model_id=model_id,
                 )
-
-                queue_config = {
-                    "max_concurrency": model_cfg.max_concurrency,
-                    "timeout": model_cfg.queue_timeout,
-                    "queue_size": model_cfg.queue_size,
-                }
 
                 # Spawn the child process and wait for it to load the model.
                 await proxy.start(queue_config)
@@ -489,10 +504,12 @@ def create_multi_lifespan(config: MultiModelServerConfig):
             # Store registry on app state for endpoint access
             app.state.registry = registry
 
-            # Backward compatibility: expose first handler as app.state.handler
-            if config.models:
-                first_id = config.models[0].model_id
-                app.state.handler = registry.get_handler(first_id)
+            # Backward compatibility: expose first non-on-demand handler
+            # as app.state.handler
+            for _cfg in config.models:
+                if not _cfg.on_demand:
+                    app.state.handler = registry.get_handler(_cfg.model_id)
+                    break
 
             logger.info(
                 f"Multi-handler initialization complete. "

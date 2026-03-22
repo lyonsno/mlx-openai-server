@@ -22,7 +22,6 @@ models:
   # Another language model
   - model_path: mlx-community/Qwen3-Coder-Next-4bit
     model_type: lm
-    max_concurrency: 1
     tool_call_parser: qwen3_coder
 
   - model_path: mlx-community/Qwen3-VL-2B-Instruct-4bit
@@ -34,3 +33,13 @@ models:
     config_name: flux2-klein-4b
     quantize: 4
     model_id: flux2-klein-4b
+
+  # On-demand model (loaded when requested, unloaded after idle timeout).
+  # Useful for large models you don't want to keep in memory permanently.
+  # Only one on-demand model is loaded at a time — requesting a different
+  # on-demand model will unload the current one first.
+  # - model_path: mlx-community/Qwen3.5-32B-4bit
+  #   model_type: lm
+  #   model_id: qwen3.5-32b
+  #   on_demand: true
+  #   on_demand_idle_timeout: 120  # seconds before unloading (default: 60)

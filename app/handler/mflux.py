@@ -38,7 +38,6 @@ class MLXFluxHandler:
     def __init__(
         self,
         model_path: str,
-        max_concurrency: int = 1,
         quantize: int | None = None,
         config_name: str = "flux-schnell",
         lora_paths: list[str] | None = None,
@@ -49,7 +48,6 @@ class MLXFluxHandler:
 
         Args:
             model_path (str): Path to the model directory or model name for Flux.
-            max_concurrency (int): Maximum number of concurrent model inference tasks.
             quantize (Optional[int]): Quantization level for the model. Must be 4, 8, or 16 if provided.
             config_name (str): Model config name (flux-schnell, flux-dev, etc.).
             lora_paths (List[str]): List of LoRA adapter paths.

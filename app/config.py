@@ -34,9 +34,9 @@ class MLXServerConfig:
     model_path: str
     model_type: str = "lm"
     context_length: int | None = None
+    served_model_name: str | None = None
     port: int = 8000
     host: str = "0.0.0.0"
-    max_concurrency: int = 1
     queue_timeout: int = 300
     queue_size: int = 100
     disable_auto_resize: bool = False
@@ -173,7 +173,6 @@ class ModelEntryConfig:
 
     # Common options
     context_length: int | None = None
-    max_concurrency: int = 1
     queue_timeout: int = 300
     queue_size: int = 100
 
@@ -184,6 +183,10 @@ class ModelEntryConfig:
     # LoRA options
     lora_paths: list[str] | None = None
     lora_scales: list[float] | None = None
+
+    # On-demand (dynamic swapping) options
+    on_demand: bool = False
+    on_demand_idle_timeout: int = 60  # seconds before unloading idle on-demand model
 
     # LM / multimodal options
     disable_auto_resize: bool = False

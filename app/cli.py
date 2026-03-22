@@ -157,11 +157,14 @@ def cli():
     type=int,
     help="Context length for language models. If not specified, uses model default. Only works with `lm` or `multimodal` model types.",
 )
+@click.option(
+    "--served-model-name",
+    default=None,
+    type=str,
+    help="Override the model name returned by /v1/models and accepted in request 'model' field. Defaults to model_path if not set.",
+)
 @click.option("--port", default=8000, type=int, help="Port to run the server on")
 @click.option("--host", default="0.0.0.0", help="Host to run the server on")
-@click.option(
-    "--max-concurrency", default=1, type=int, help="Maximum number of concurrent requests"
-)
 @click.option("--queue-timeout", default=300, type=int, help="Request timeout in seconds")
 @click.option("--queue-size", default=100, type=int, help="Maximum queue size for pending requests")
 @click.option(
@@ -326,9 +329,9 @@ def launch(
     model_path,
     model_type,
     context_length,
+    served_model_name,
     port,
     host,
-    max_concurrency,
     queue_timeout,
     queue_size,
     quantize,
@@ -395,9 +398,9 @@ def launch(
         model_path=model_path,
         model_type=model_type,
         context_length=context_length,
+        served_model_name=served_model_name,
         port=port,
         host=host,
-        max_concurrency=max_concurrency,
         queue_timeout=queue_timeout,
         queue_size=queue_size,
         quantize=quantize,
