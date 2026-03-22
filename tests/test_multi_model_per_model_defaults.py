@@ -802,6 +802,31 @@ async def test_chat_completions_explicit_legacy_alias_without_registry_entry_sti
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_omitted_model_with_non_text_fallback_still_404s() -> None:
+    """Omitted chat should not route to a non-text fallback handler."""
+
+    endpoints_module = _load_endpoints_module()
+
+    fallback_handler = types.SimpleNamespace(
+        handler_type="whisper",
+        model_id="whisper-a",
+        model_path="mlx-community/whisper-a",
+        debug=False,
+    )
+    registry = _FakeRegistry({"whisper-a": fallback_handler})
+
+    request = ChatCompletionRequest(messages=[Message(role="user", content="hello")])
+
+    with pytest.raises(HTTPException) as exc_info:
+        await endpoints_module.chat_completions(
+            request, _make_raw_request(registry, handler=fallback_handler)
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"]["type"] == "model_not_found"
+
+
+@pytest.mark.asyncio
 async def test_responses_omitted_model_reports_resolved_fallback_model_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -967,6 +992,31 @@ async def test_responses_stream_omitted_model_reports_registered_legacy_alias_wh
 
     assert events[0]["response"]["model"] == Config.TEXT_MODEL
     assert events[-1]["response"]["model"] == Config.TEXT_MODEL
+
+
+@pytest.mark.asyncio
+async def test_responses_omitted_model_with_non_text_fallback_still_404s() -> None:
+    """Omitted Responses should not route to a non-text fallback handler."""
+
+    endpoints_module = _load_endpoints_module()
+
+    fallback_handler = types.SimpleNamespace(
+        handler_type="whisper",
+        model_id="whisper-a",
+        model_path="mlx-community/whisper-a",
+        debug=False,
+    )
+    registry = _FakeRegistry({"whisper-a": fallback_handler})
+
+    request = ResponsesRequest(input="hello", model=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await endpoints_module.responses_endpoint(
+            request, _make_raw_request(registry, handler=fallback_handler)
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"]["type"] == "model_not_found"
 
 
 @pytest.mark.asyncio

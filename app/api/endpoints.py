@@ -85,6 +85,12 @@ def _get_handler_type(handler: Any) -> str:
     return getattr(handler, "handler_type", "")
 
 
+def _is_text_compatible_handler(handler: Any | None) -> bool:
+    """Return whether a handler can serve chat/Responses text requests."""
+
+    return _get_handler_type(handler) in ("lm", "multimodal")
+
+
 def _resolve_handler(
     raw_request: Request,
     model_id: str | None = None,
@@ -181,7 +187,7 @@ def _should_use_legacy_chat_fallback(
     try:
         registry.get_handler(Config.TEXT_MODEL)
     except KeyError:
-        return getattr(raw_request.app.state, "handler", None) is not None
+        return _is_text_compatible_handler(getattr(raw_request.app.state, "handler", None))
 
     return False
 
@@ -208,7 +214,7 @@ def _should_use_legacy_responses_fallback(
     try:
         registry.get_handler(Config.TEXT_MODEL)
     except KeyError:
-        return getattr(raw_request.app.state, "handler", None) is not None
+        return _is_text_compatible_handler(getattr(raw_request.app.state, "handler", None))
 
     return False
 
