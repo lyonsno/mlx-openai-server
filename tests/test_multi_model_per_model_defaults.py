@@ -94,11 +94,21 @@ def _load_endpoints_module() -> Any:
 class _FakeRegistry:
     """Minimal registry stub that resolves handlers by model id."""
 
-    def __init__(self, handlers: dict[str, Any]) -> None:
+    def __init__(self, handlers: dict[str, Any], on_demand: set[str] | None = None) -> None:
         self._handlers = handlers
+        self._on_demand = on_demand or set()
 
     def get_handler(self, model_id: str) -> Any:
         return self._handlers[model_id]
+
+    def is_on_demand(self, model_id: str) -> bool:
+        return model_id in self._on_demand
+
+    async def ensure_on_demand_loaded(self, model_id: str) -> Any:
+        return self._handlers[model_id]
+
+    def list_model_ids(self) -> list[str]:
+        return list(self._handlers)
 
 
 def _make_raw_request(registry: _FakeRegistry | None, handler: Any | None = None) -> Any:
@@ -989,7 +999,7 @@ async def test_responses_stream_single_model_omitted_model_preserves_legacy_defa
 async def test_chat_completions_single_model_omitted_model_preserves_legacy_default_alias(
     registry_case: str,
 ) -> None:
-    """Single-model omitted chat requests should still report ``local-text-model``."""
+    """Single-model omitted chat requests should preserve the rebased fallback split."""
 
     endpoints_module = _load_endpoints_module()
 
@@ -1012,7 +1022,10 @@ async def test_chat_completions_single_model_omitted_model_preserves_legacy_defa
 
     assert isinstance(response, JSONResponse)
     payload = json.loads(response.body)
-    assert payload["model"] == Config.TEXT_MODEL
+    expected_model = (
+        single_handler.model_path if registry_case == "no-registry" else Config.TEXT_MODEL
+    )
+    assert payload["model"] == expected_model
 
 
 @pytest.mark.asyncio
@@ -1024,7 +1037,7 @@ async def test_chat_completions_single_model_omitted_model_preserves_legacy_defa
 async def test_chat_completions_stream_single_model_omitted_model_preserves_legacy_default_alias(
     registry_case: str,
 ) -> None:
-    """Streamed single-model omitted chat requests should still report ``local-text-model``."""
+    """Streamed single-model omitted chat requests should preserve the rebased fallback split."""
 
     endpoints_module = _load_endpoints_module()
 
@@ -1062,4 +1075,7 @@ async def test_chat_completions_stream_single_model_omitted_model_preserves_lega
 
     model_values = [event["model"] for event in events if "model" in event]
     assert model_values
-    assert set(model_values) == {Config.TEXT_MODEL}
+    expected_model = (
+        single_handler.model_path if registry_case == "no-registry" else Config.TEXT_MODEL
+    )
+    assert set(model_values) == {expected_model}

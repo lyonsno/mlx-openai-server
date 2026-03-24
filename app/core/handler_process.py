@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
+from dataclasses import fields
 import multiprocessing as mp
 import os
 import queue
@@ -46,6 +47,8 @@ import uuid
 
 from loguru import logger
 
+from app import config as config_module
+
 # ---------------------------------------------------------------------------
 # IPC protocol constants
 # ---------------------------------------------------------------------------
@@ -53,6 +56,14 @@ from loguru import logger
 _SHUTDOWN = "__SHUTDOWN__"
 _STREAM_END = "__STREAM_END__"
 _CANCEL = "__CANCEL__"
+_STARTUP_MODEL_STATE_FIELDS: tuple[str, ...] = tuple(
+    sorted(config_module.RUNTIME_ONLY_MODEL_ENTRY_FIELDS)
+)
+_SERIALIZED_MODEL_CFG_FIELDS: tuple[str, ...] = tuple(
+    field.name
+    for field in fields(config_module.ModelEntryConfig)
+    if field.name not in config_module.RUNTIME_ONLY_MODEL_ENTRY_FIELDS
+)
 
 
 async def _stream_until_cancelled(
@@ -106,6 +117,31 @@ async def _stream_until_cancelled(
             await stream.aclose()
 
 
+def _split_model_cfg_for_worker(
+    model_cfg: config_module.ModelEntryConfig,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split serialized model config from runtime-only startup bookkeeping."""
+
+    serialized_model_cfg = {
+        field_name: getattr(model_cfg, field_name) for field_name in _SERIALIZED_MODEL_CFG_FIELDS
+    }
+    startup_state = {
+        field_name: getattr(model_cfg, field_name) for field_name in _STARTUP_MODEL_STATE_FIELDS
+    }
+    return serialized_model_cfg, startup_state
+
+
+def _apply_startup_state_to_model_cfg(
+    model_cfg: config_module.ModelEntryConfig,
+    startup_state: dict[str, Any],
+) -> None:
+    """Restore runtime-only startup bookkeeping onto a model config."""
+
+    for field_name in _STARTUP_MODEL_STATE_FIELDS:
+        if field_name in startup_state:
+            setattr(model_cfg, field_name, startup_state[field_name])
+
+
 # ---------------------------------------------------------------------------
 # Child process entry point
 # ---------------------------------------------------------------------------
@@ -113,6 +149,7 @@ async def _stream_until_cancelled(
 
 def _handler_worker(
     model_cfg_dict: dict[str, Any],
+    startup_state: dict[str, Any],
     queue_config: dict[str, Any],
     request_queue: mp.Queue,  # type: ignore[type-arg]
     response_queue: mp.Queue,  # type: ignore[type-arg]
@@ -134,6 +171,9 @@ def _handler_worker(
     ----------
     model_cfg_dict : dict[str, Any]
         Serialized ``ModelEntryConfig`` fields (plain dict for pickling).
+    startup_state : dict[str, Any]
+        Runtime-only startup bookkeeping carried separately from the
+        serialized model config payload.
     queue_config : dict[str, Any]
         Configuration for the handler's ``InferenceWorker``
         (``queue_size``, ``timeout``).
@@ -197,6 +237,7 @@ def _handler_worker(
 
     async def _main() -> None:
         model_cfg = ModelEntryConfig(**model_cfg_dict)
+        _apply_startup_state_to_model_cfg(model_cfg, startup_state)
         model_id = model_cfg.served_model_name
 
         # ------------------------------------------------------------------
@@ -360,7 +401,8 @@ class HandlerProcessProxy:
         model_cfg_dict: dict[str, Any],
         model_type: str,
         model_path: str,
-        served_model_name: str,
+        served_model_name: str | None = None,
+        model_id: str | None = None,
     ) -> None:
         """Initialize the handler process proxy.
 
@@ -372,17 +414,53 @@ class HandlerProcessProxy:
             Model type from config (``"lm"``, ``"multimodal"``, etc.).
         model_path : str
             Path to the model.
-        served_model_name : str
+        served_model_name : str | None
             Unique identifier for the model.
+        model_id : str | None
+            Backward-compatible alias for ``served_model_name``.
         """
+        if served_model_name is None:
+            served_model_name = model_id
+        elif model_id is not None and model_id != served_model_name:
+            msg = (
+                "HandlerProcessProxy received conflicting served_model_name="
+                f"'{served_model_name}' and model_id='{model_id}'."
+            )
+            raise ValueError(msg)
+        if served_model_name is None:
+            msg = "HandlerProcessProxy requires served_model_name or model_id."
+            raise ValueError(msg)
+
         self.model_path = model_path
         self.served_model_name = served_model_name
         self.handler_type = self._MODEL_TYPE_TO_HANDLER_TYPE.get(model_type, model_type)
         self.model_created: int = 0
 
-        self._model_cfg_dict = model_cfg_dict
+        seeded_model_cfg_dict = dict(model_cfg_dict)
+        for field_name in ("served_model_name", "model_id"):
+            serialized_value = seeded_model_cfg_dict.get(field_name)
+            if serialized_value is not None and serialized_value != served_model_name:
+                msg = (
+                    "HandlerProcessProxy received conflicting "
+                    f"{field_name}='{serialized_value}' and "
+                    f"served_model_name='{served_model_name}'."
+                )
+                raise ValueError(msg)
+        seeded_model_cfg_dict["served_model_name"] = served_model_name
+        seeded_model_cfg_dict["model_id"] = served_model_name
+
+        seeded_model_cfg = config_module.ModelEntryConfig(**seeded_model_cfg_dict)
+        # Retry best-effort seeding here because YAML load may have run before
+        # a local snapshot/cache entry was available for this model.
+        if config_module.should_attempt_generation_config_seeding(seeded_model_cfg):
+            config_module.attempt_generation_config_seeding(
+                seeded_model_cfg,
+                resolver=config_module.resolve_generation_config_model_dir,
+            )
+        self._model_cfg_dict, self._startup_state = _split_model_cfg_for_worker(seeded_model_cfg)
         for field_name in self._SAMPLING_DEFAULT_FIELDS:
-            setattr(self, field_name, model_cfg_dict.get(field_name))
+            setattr(self, field_name, self._model_cfg_dict.get(field_name))
+        self.debug = bool(self._model_cfg_dict.get("debug", False))
         self._uses_model_sampling_defaults = True
 
         # Use the ``spawn`` start method for clean Metal runtime isolation.
@@ -429,6 +507,11 @@ class HandlerProcessProxy:
         self._rpc_timeout = float(queue_config.get("timeout", 300))
         self._queue_config = queue_config
 
+        # Register the ready waiter before startup can emit a ready signal
+        # or fail and enter rollback.
+        ready_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._pending["__ready__"] = ready_queue
+
         # Start the response reader thread.
         self._reader_thread = threading.Thread(
             target=self._response_reader,
@@ -437,28 +520,25 @@ class HandlerProcessProxy:
         )
         self._reader_thread.start()
 
-        # Spawn the child process.
-        self._process = self._ctx.Process(
-            target=_handler_worker,
-            args=(
-                self._model_cfg_dict,
-                queue_config,
-                self._request_queue,
-                self._response_queue,
-                self._control_queue,
-            ),
-            name=f"handler-{self.served_model_name}",
-        )
-        self._process.start()
-        logger.info(
-            f"Spawned handler process for '{self.served_model_name}' (pid={self._process.pid})"
-        )
-
-        # Wait for the ready signal.
-        ready_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._pending["__ready__"] = ready_queue
-
         try:
+            # Spawn the child process.
+            self._process = self._ctx.Process(
+                target=_handler_worker,
+                args=(
+                    self._model_cfg_dict,
+                    self._startup_state,
+                    queue_config,
+                    self._request_queue,
+                    self._response_queue,
+                    self._control_queue,
+                ),
+                name=f"handler-{self.served_model_name}",
+            )
+            self._process.start()
+            logger.info(
+                f"Spawned handler process for '{self.served_model_name}' (pid={self._process.pid})"
+            )
+
             try:
                 response = await self._wait_for_ready(ready_queue, timeout=300)
             finally:
@@ -475,6 +555,8 @@ class HandlerProcessProxy:
             except Exception:
                 logger.exception(f"Failed to rollback startup for '{self.served_model_name}'")
             raise
+        finally:
+            self._pending.pop("__ready__", None)
 
         self.model_created = int(time.time())
         logger.info(f"Handler process for '{self.served_model_name}' is ready")
@@ -1169,8 +1251,23 @@ class HandlerProcessProxy:
         up concurrently via ``asyncio.gather`` without blocking the
         event loop.
         """
-        if not self._process or not self._process.is_alive():
+
+        def _process_is_alive() -> bool:
+            """Safely check whether the process handle still reports alive."""
+
+            if self._process is None:
+                return False
+            try:
+                return bool(self._process.is_alive())
+            except (AssertionError, OSError, ValueError):
+                return False
+
+        if not _process_is_alive():
             self._running = False
+            if self._reader_thread and self._reader_thread.is_alive():
+                self._reader_thread.join(timeout=2)
+            self._process = None
+            self._reader_thread = None
             return
 
         # -- Phase 1: Request a graceful shutdown via the IPC queue. --
@@ -1206,7 +1303,7 @@ class HandlerProcessProxy:
         self._running = False
 
         # -- Phase 2: Ensure the child process exits. --
-        if not graceful and self._process.is_alive():
+        if not graceful and _process_is_alive():
             self._process.terminate()
 
         try:
@@ -1214,7 +1311,7 @@ class HandlerProcessProxy:
         except (OSError, ValueError):
             pass  # Process handle already closed / invalid.
 
-        if self._process.is_alive():
+        if _process_is_alive():
             logger.warning(f"Force-killing handler process for '{self.served_model_name}'")
             try:
                 self._process.kill()
@@ -1229,4 +1326,6 @@ class HandlerProcessProxy:
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2)
 
+        self._process = None
+        self._reader_thread = None
         logger.info(f"Handler process for '{self.served_model_name}' shut down successfully")

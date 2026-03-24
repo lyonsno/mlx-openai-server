@@ -13,12 +13,19 @@ these structures.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from functools import cache
+import json
+import math
 from pathlib import Path
 
 from loguru import logger
 
 from .message_converters import resolve_message_converter_name
+
+snapshot_download: Callable[..., str] | None = None
 
 
 @dataclass
@@ -193,6 +200,17 @@ class MLXServerConfig:
             kv_bits=self.kv_bits,
             kv_group_size=self.kv_group_size,
             quantized_kv_start=self.quantized_kv_start,
+            default_max_tokens=self.default_max_tokens,
+            default_temperature=self.default_temperature,
+            default_top_p=self.default_top_p,
+            default_top_k=self.default_top_k,
+            default_min_p=self.default_min_p,
+            default_repetition_penalty=self.default_repetition_penalty,
+            default_presence_penalty=self.default_presence_penalty,
+            default_xtc_probability=self.default_xtc_probability,
+            default_xtc_threshold=self.default_xtc_threshold,
+            default_seed=self.default_seed,
+            default_repetition_context_size=self.default_repetition_context_size,
         )
 
 
@@ -203,6 +221,9 @@ class MLXServerConfig:
 VALID_MODEL_TYPES = frozenset(
     {"lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"}
 )
+RUNTIME_ONLY_MODEL_ENTRY_FIELDS = frozenset(
+    {"generation_config_seed_attempted", "generation_config_lookup_warning_emitted"}
+)
 
 
 @dataclass
@@ -210,14 +231,15 @@ class ModelEntryConfig:
     """Configuration for a single model entry in a multi-model YAML config.
 
     Each entry maps to exactly one handler that will be registered in
-    the ``ModelRegistry``.  The ``served_model_name`` defaults to
-    ``model_path`` when not set explicitly, giving callers a short
-    alias they can use in API requests.
+    the ``ModelRegistry``. The canonical registry key is
+    ``served_model_name``; ``model_id`` is kept as a compatibility
+    alias for older YAML configs and local tests.
     """
 
     model_path: str
     model_type: str = "lm"
     served_model_name: str | None = None
+    model_id: str | None = field(default=None, repr=False, compare=False)
 
     # Common options
     context_length: int | None = None
@@ -263,11 +285,23 @@ class ModelEntryConfig:
     default_xtc_threshold: float | None = None
     default_seed: int | None = None
     default_repetition_context_size: int | None = None
+    # Runtime-only generation-config bookkeeping. These fields are used by
+    # startup seeding code and are intentionally ignored when loading YAML.
+    generation_config_seed_attempted: bool = field(default=False, repr=False, compare=False)
+    generation_config_lookup_warning_emitted: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        """Resolve ``served_model_name`` and validate ``model_type``."""
+        """Resolve served-model naming aliases and validate ``model_type``."""
         if self.served_model_name is None:
-            self.served_model_name = self.model_path
+            self.served_model_name = self.model_id or self.model_path
+        elif self.model_id is not None and self.model_id != self.served_model_name:
+            msg = (
+                f"Model '{self.model_path}' provides conflicting "
+                f"served_model_name='{self.served_model_name}' and model_id='{self.model_id}'."
+            )
+            raise ValueError(msg)
+
+        self.model_id = self.served_model_name
 
         if self.model_type not in VALID_MODEL_TYPES:
             msg = (
@@ -334,6 +368,269 @@ class MultiModelServerConfig:
     no_log_file: bool = False
 
 
+_GENERATION_CONFIG_TO_DEFAULT_FIELD: dict[str, str] = {
+    "max_new_tokens": "default_max_tokens",
+    "temperature": "default_temperature",
+    "top_p": "default_top_p",
+    "top_k": "default_top_k",
+    "min_p": "default_min_p",
+    "repetition_penalty": "default_repetition_penalty",
+}
+
+
+def _coerce_generation_config_float(value: object) -> float:
+    """Coerce a generation-config value to a finite float.
+
+    Bools are rejected even though Python treats them as ints.
+    """
+
+    if isinstance(value, bool):
+        raise TypeError("boolean values are not valid floats")
+
+    if isinstance(value, (int, float)):
+        result = float(value)
+    elif isinstance(value, str):
+        result = float(value.strip())
+    else:
+        raise TypeError("unsupported float value type")
+
+    if not math.isfinite(result):
+        raise ValueError("float value must be finite")
+    return result
+
+
+def _coerce_generation_config_int(value: object) -> int:
+    """Coerce a generation-config value to an integer without loss.
+
+    Accepts integral ints, integral floats, and integral numeric strings.
+    Rejects bools and lossy conversions such as ``1.7``.
+    """
+
+    if isinstance(value, bool):
+        raise TypeError("boolean values are not valid integers")
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError("float value must be integral")
+        return int(value)
+
+    if isinstance(value, str):
+        try:
+            parsed = Decimal(value.strip())
+        except InvalidOperation as exc:
+            raise ValueError("string value must represent an integer") from exc
+        if not parsed.is_finite() or parsed != parsed.to_integral_value():
+            raise ValueError("string value must represent an integer")
+        return int(parsed)
+
+    raise TypeError("unsupported integer value type")
+
+
+_GENERATION_CONFIG_COERCERS: dict[str, Callable[[object], int | float]] = {
+    "default_max_tokens": _coerce_generation_config_int,
+    "default_temperature": _coerce_generation_config_float,
+    "default_top_p": _coerce_generation_config_float,
+    "default_top_k": _coerce_generation_config_int,
+    "default_min_p": _coerce_generation_config_float,
+    "default_repetition_penalty": _coerce_generation_config_float,
+}
+
+
+@cache
+def _get_snapshot_download() -> Callable[..., str] | None:
+    """Lazily resolve ``huggingface_hub.snapshot_download`` when needed."""
+
+    try:
+        from huggingface_hub import snapshot_download as _snapshot_download
+    except ImportError:
+        return None
+    return _snapshot_download
+
+
+def _resolve_generation_config_model_dir(model_path: str) -> Path | None:
+    """Resolve a model path to a directory that may contain generation config.
+
+    Local filesystem directories are returned directly. Hugging Face repo IDs
+    are resolved best-effort from the local Hugging Face cache only so
+    generation-config seeding does not introduce network/download work on the
+    main startup path. When a cached repo snapshot resolves successfully, the
+    snapshot directory is returned even if it does not contain a
+    ``generation_config.json`` so callers can remember that the best-effort
+    lookup already happened.
+    """
+
+    local_path = Path(model_path)
+    if local_path.is_dir():
+        return local_path
+
+    resolve_snapshot_download = snapshot_download or _get_snapshot_download()
+    if resolve_snapshot_download is None:
+        return None
+
+    try:
+        snapshot_dir = resolve_snapshot_download(
+            repo_id=model_path,
+            allow_patterns="generation_config.json",
+            local_files_only=True,
+        )
+    except Exception:
+        return None
+
+    return Path(snapshot_dir)
+
+
+def resolve_generation_config_model_dir(model_path: str) -> Path | None:
+    """Public wrapper for best-effort generation-config path resolution."""
+
+    return _resolve_generation_config_model_dir(model_path)
+
+
+def _seed_model_defaults_from_generation_config(
+    model_cfg: ModelEntryConfig,
+    model_dir: Path | None = None,
+) -> None:
+    """Best-effort seed missing model defaults from ``generation_config.json``.
+
+    Explicit YAML defaults remain authoritative; this helper only fills
+    fields that are still ``None`` on the ``ModelEntryConfig``.
+    Missing or malformed generation-config files are tolerated so
+    request-time env fallback remains available. Parse failures are
+    intentionally retryable later in startup in case the file becomes
+    valid before proxy or child handler construction.
+    """
+
+    if model_cfg.model_type not in {"lm", "multimodal"}:
+        return
+
+    generation_config_root = model_dir or Path(model_cfg.model_path)
+    generation_config_path = generation_config_root / "generation_config.json"
+    if not generation_config_path.exists():
+        return
+
+    try:
+        generation_config = json.loads(generation_config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.warning(
+            f"Failed to read generation config for model '{model_cfg.model_path}' "
+            f"from '{generation_config_path}': {exc}"
+        )
+        return
+
+    if not isinstance(generation_config, dict):
+        logger.warning(
+            f"Ignoring generation config for model '{model_cfg.model_path}' "
+            "because it is not a JSON object."
+        )
+        return
+
+    encountered_invalid_missing_default = False
+
+    for source_key, target_field in _GENERATION_CONFIG_TO_DEFAULT_FIELD.items():
+        if getattr(model_cfg, target_field) is not None:
+            continue
+        source_value = generation_config.get(source_key)
+        if source_value is not None:
+            try:
+                coerced_value = _GENERATION_CONFIG_COERCERS[target_field](source_value)
+            except (KeyError, TypeError, ValueError):
+                encountered_invalid_missing_default = True
+                logger.warning(
+                    f"Ignoring generation config value for model '{model_cfg.model_path}' "
+                    f"because '{source_key}={source_value!r}' is not a valid "
+                    f"{target_field} value."
+                )
+                continue
+            setattr(model_cfg, target_field, coerced_value)
+
+    # Partial-but-valid generation configs may intentionally leave some keys
+    # absent; those should still count as attempted to avoid repeated startup
+    # work. Keep attempts retryable only when a missing default had an invalid
+    # value that could be corrected later in startup.
+    if not encountered_invalid_missing_default:
+        model_cfg.generation_config_seed_attempted = True
+
+
+def has_missing_generation_config_defaults(model_cfg: ModelEntryConfig) -> bool:
+    """Return whether mapped generation-config-backed defaults are still missing."""
+
+    if model_cfg.model_type not in {"lm", "multimodal"}:
+        return False
+
+    return any(
+        getattr(model_cfg, target_field) is None
+        for target_field in _GENERATION_CONFIG_TO_DEFAULT_FIELD.values()
+    )
+
+
+def should_attempt_generation_config_seeding(model_cfg: ModelEntryConfig) -> bool:
+    """Return whether generation-config seeding should still be attempted.
+
+    This is stricter than ``has_missing_generation_config_defaults`` because a
+    partially populated generation config can legitimately leave some mapped
+    defaults unset after seeding. Once a valid generation-config object has
+    been read for a text-capable model and all present mapped values were
+    semantically valid, startup should not repeat the same seeding work.
+    Earlier misses, absent files, parse failures, or semantic-invalid mapped
+    values may still be retried later in startup.
+    """
+
+    return (
+        has_missing_generation_config_defaults(model_cfg)
+        and not model_cfg.generation_config_seed_attempted
+    )
+
+
+def attempt_generation_config_seeding(
+    model_cfg: ModelEntryConfig,
+    resolver: Callable[[str], Path | None] | None = None,
+) -> None:
+    """Best-effort seed defaults using a local dir or local-cache repo lookup.
+
+    Repo-id lookups may retry across startup phases if the local-cache-only
+    resolver misses or if a resolved snapshot does not yet contain a
+    ``generation_config.json``. Warning emission for unresolved repo lookups is
+    deduped per model during a startup by ``generation_config_lookup_warning_emitted``.
+    """
+
+    if not should_attempt_generation_config_seeding(model_cfg):
+        return
+
+    local_path = Path(model_cfg.model_path)
+    if local_path.is_dir():
+        _seed_model_defaults_from_generation_config(model_cfg, model_dir=local_path)
+        return
+
+    resolve_model_dir = resolver or _resolve_generation_config_model_dir
+    resolved_model_dir = resolve_model_dir(model_cfg.model_path)
+    if resolved_model_dir is None:
+        if not model_cfg.generation_config_lookup_warning_emitted:
+            logger.warning(
+                f"Failed to resolve generation config snapshot for model "
+                f"'{model_cfg.model_path}' from the local cache. "
+                "Generation-config seeding may be retried before handler "
+                "initialization if a source becomes available."
+            )
+            model_cfg.generation_config_lookup_warning_emitted = True
+        return
+
+    _seed_model_defaults_from_generation_config(
+        model_cfg,
+        model_dir=resolved_model_dir,
+    )
+
+
+def seed_model_defaults_from_generation_config(
+    model_cfg: ModelEntryConfig,
+    model_dir: Path | None = None,
+) -> None:
+    """Public wrapper for best-effort generation-config default seeding."""
+
+    _seed_model_defaults_from_generation_config(model_cfg, model_dir=model_dir)
+
+
 def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
     """Parse a YAML config file into a ``MultiModelServerConfig``.
 
@@ -392,7 +689,13 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
             msg = f"Model entry at index {idx} is missing required key 'model_path'"
             raise ValueError(msg)
 
-        model_cfg = ModelEntryConfig(**entry)
+        model_cfg = ModelEntryConfig(
+            **{
+                key: value
+                for key, value in entry.items()
+                if key not in RUNTIME_ONLY_MODEL_ENTRY_FIELDS
+            }
+        )
 
         # Enforce unique served_model_name values
         if model_cfg.served_model_name in seen_ids:
@@ -401,6 +704,7 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
                 "Each model must have a unique served_model_name."
             )
             raise ValueError(msg)
+        attempt_generation_config_seeding(model_cfg)
         seen_ids.add(model_cfg.served_model_name)
         model_entries.append(model_cfg)
 

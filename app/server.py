@@ -30,7 +30,14 @@ import mlx.core as mx
 import uvicorn
 
 from .api.endpoints import router
-from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
+from .config import (
+    MLXServerConfig,
+    ModelEntryConfig,
+    MultiModelServerConfig,
+    attempt_generation_config_seeding,
+    resolve_generation_config_model_dir,
+    should_attempt_generation_config_seeding,
+)
 from .core.handler_process import HandlerProcessProxy
 from .core.model_registry import ModelRegistry
 from .handler import MLXFluxHandler
@@ -44,6 +51,9 @@ MFLUX_INSTALL_HINT = (
     "Image generation and editing require the `mflux` package. "
     "Install it with `pip install mflux==0.17.0`."
 )
+
+_resolve_generation_config_model_dir = resolve_generation_config_model_dir
+_attempt_generation_config_seeding = attempt_generation_config_seeding
 
 
 def ensure_image_handler_available(model_type: str) -> None:
@@ -107,7 +117,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        print,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
@@ -242,6 +252,11 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         is invalid for the given type.
     """
     model_path = model_cfg.model_path
+    if should_attempt_generation_config_seeding(model_cfg):
+        _attempt_generation_config_seeding(
+            model_cfg,
+            resolver=_resolve_generation_config_model_dir,
+        )
 
     if model_cfg.model_type == "multimodal":
         return _attach_sampling_defaults(
@@ -478,7 +493,8 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
     When ``config_args`` is a ``MultiModelServerConfig`` the multi-handler
     lifespan is used, which registers all models in a ``ModelRegistry``.
 
-    Note: This function mutates the module-level ``app`` global variable.
+    Note: This function updates the module-level ``app`` export for
+    compatibility with ``app.server:app`` style importers.
 
     Parameters
     ----------
@@ -491,8 +507,6 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
-    global app  # noqa: PLW0603
-
     # Extract logging parameters (available on both config types)
     log_file = getattr(config_args, "log_file", None)
     no_log_file = getattr(config_args, "no_log_file", False)
@@ -512,17 +526,18 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         lifespan_fn = create_lifespan(config_args)
 
     # Create FastAPI app with the configured lifespan
-    app = FastAPI(
+    app_instance = FastAPI(
         title="OpenAI-compatible API",
         description="API for OpenAI-compatible chat completion and text embedding",
         version=__version__,
         lifespan=lifespan_fn,
     )
+    globals()["app"] = app_instance
 
-    app.include_router(router)
+    app_instance.include_router(router)
 
     # Add CORS middleware
-    app.add_middleware(
+    app_instance.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_credentials=True,
@@ -530,7 +545,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         allow_headers=["*"],
     )
 
-    @app.middleware("http")
+    @app_instance.middleware("http")
     async def add_process_time_header(request: Request, call_next):
         """Middleware to add processing time header and run cleanup.
 
@@ -559,7 +574,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
 
         return response
 
-    @app.exception_handler(Exception)
+    @app_instance.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Global exception handler that logs and returns a 500 payload.
 
@@ -577,7 +592,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
     port = config_args.port
     logger.info(f"Starting server on {host}:{port}")
     return uvicorn.Config(
-        app=app,
+        app=app_instance,
         host=host,
         port=port,
         log_level=log_level.lower(),
