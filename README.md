@@ -25,6 +25,7 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 - [Example Notebooks](#example-notebooks)
 - [Large Models](#large-models)
 - [Troubleshooting](#troubleshooting)
+- [Frequently Encountered Problems](#frequently-encountered-problems)
 - [Quick Reference Card](#quick-reference-card)
 - [Featured Launch: MiniMax-M2.5-Uncensored-4bit](#featured-launch-minimax-m25-uncensored-4bit)
 - [Contributing](#contributing)
@@ -738,6 +739,29 @@ This raises the system's wired memory limit for better performance.
 | **Port already in use** | Use `--port` to specify a different port (e.g. `--port 8001`). |
 | **Quantization questions** | For lm/multimodal, use pre-quantized models from [mlx-community](https://huggingface.co/mlx-community). For image models, use `--quantize 4` or `8`. |
 | **Metal/semaphore warnings** | Use multi-handler mode (`--config`); each model runs in a spawned subprocess to avoid Metal context issues. |
+
+---
+
+## Frequently Encountered Problems
+
+### Model loading errors (e.g. "parameters not in model")
+
+If you see errors like **"Received N parameters not in model"** or weight/parameter mismatches when loading a newly released model, the most common cause is an outdated version of the underlying MLX model library. New models often require the latest architecture support from `mlx-lm`, `mlx-vlm`, or other backend packages.
+
+**Fix:** Install the latest version directly from the source repository:
+
+```bash
+# For text models (lm)
+uv pip install git+https://github.com/ml-explore/mlx-lm.git
+
+# For multimodal models
+uv pip install git+https://github.com/Blaizzy/mlx-vlm.git
+
+# For embeddings
+uv pip install git+https://github.com/Blaizzy/mlx-embeddings.git
+```
+
+The git versions often contain support for new model architectures before a PyPI release is published. After upgrading, restart the server and try loading the model again.
 
 ---
 
