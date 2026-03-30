@@ -43,10 +43,10 @@ class ModelRegistry:
 
         # On-demand (dynamic swapping) state
         self._on_demand_configs: dict[str, dict[str, Any]] = {}
-        self._on_demand_loaded: str | None = None
+        self._on_demand_loaded: set[str] = set()
         self._on_demand_load_lock = asyncio.Lock()
         self._on_demand_ref_count: dict[str, int] = {}
-        self._on_demand_idle_task: asyncio.Task | None = None
+        self._on_demand_idle_tasks: dict[str, asyncio.Task] = {}
         self._on_demand_idle_timeouts: dict[str, int] = {}
 
         logger.info("Model registry initialized")
@@ -200,10 +200,10 @@ class ModelRegistry:
         not serialise their timeout windows.  Called during server
         shutdown.
         """
-        # Cancel any pending on-demand idle unload task
-        if self._on_demand_idle_task is not None:
-            self._on_demand_idle_task.cancel()
-            self._on_demand_idle_task = None
+        # Cancel any pending on-demand idle unload tasks
+        for task in self._on_demand_idle_tasks.values():
+            task.cancel()
+        self._on_demand_idle_tasks.clear()
 
         async with self._lock:
             cleanup_tasks = [
@@ -217,7 +217,7 @@ class ModelRegistry:
             self._handlers.clear()
             self._metadata.clear()
             self._on_demand_configs.clear()
-            self._on_demand_loaded = None
+            self._on_demand_loaded.clear()
             self._on_demand_ref_count.clear()
             self._on_demand_idle_timeouts.clear()
             logger.info("All models unregistered and cleaned up")
@@ -359,10 +359,10 @@ class ModelRegistry:
 
         async with self._on_demand_load_lock:
             # Already loaded — just bump ref count
-            if model_id in self._handlers and self._on_demand_loaded == model_id:
-                if self._on_demand_idle_task is not None:
-                    self._on_demand_idle_task.cancel()
-                    self._on_demand_idle_task = None
+            if model_id in self._handlers and model_id in self._on_demand_loaded:
+                idle_task = self._on_demand_idle_tasks.pop(model_id, None)
+                if idle_task is not None:
+                    idle_task.cancel()
                 self._on_demand_ref_count[model_id] = self._on_demand_ref_count.get(model_id, 0) + 1
                 logger.debug(
                     f"On-demand model '{model_id}' already loaded, "
@@ -370,18 +370,27 @@ class ModelRegistry:
                 )
                 return self._handlers[model_id]
 
-            # Different on-demand model loaded — unload it first
-            if self._on_demand_loaded is not None and self._on_demand_loaded in self._handlers:
-                old_id = self._on_demand_loaded
-                if self._on_demand_idle_task is not None:
-                    self._on_demand_idle_task.cancel()
-                    self._on_demand_idle_task = None
-                old_handler = self._handlers.pop(old_id)
-                logger.info(f"Unloading on-demand model '{old_id}' to make room for '{model_id}'")
+            # Unload idle on-demand models to free memory.
+            # Only unload models with no active requests (ref_count == 0).
+            for loaded_id in list(self._on_demand_loaded):
+                if loaded_id == model_id or loaded_id not in self._handlers:
+                    continue
+                if self._on_demand_ref_count.get(loaded_id, 0) > 0:
+                    logger.info(
+                        f"On-demand model '{loaded_id}' still has active requests "
+                        f"(ref_count={self._on_demand_ref_count[loaded_id]}), "
+                        f"keeping loaded alongside '{model_id}'"
+                    )
+                    continue
+                idle_task = self._on_demand_idle_tasks.pop(loaded_id, None)
+                if idle_task is not None:
+                    idle_task.cancel()
+                old_handler = self._handlers.pop(loaded_id)
+                logger.info(f"Unloading on-demand model '{loaded_id}' to make room for '{model_id}'")
                 if hasattr(old_handler, "cleanup"):
                     await old_handler.cleanup()
-                self._on_demand_ref_count.pop(old_id, None)
-                self._on_demand_loaded = None
+                self._on_demand_ref_count.pop(loaded_id, None)
+                self._on_demand_loaded.discard(loaded_id)
 
             # Spawn the new on-demand handler
             cfg = self._on_demand_configs[model_id]
@@ -398,7 +407,7 @@ class ModelRegistry:
             await proxy.start(cfg["queue_config"])
 
             self._handlers[model_id] = proxy
-            self._on_demand_loaded = model_id
+            self._on_demand_loaded.add(model_id)
             self._on_demand_ref_count[model_id] = 1
 
             logger.info(f"On-demand model '{model_id}' loaded successfully")
@@ -426,9 +435,12 @@ class ModelRegistry:
 
         if self._on_demand_ref_count[model_id] == 0:
             timeout = self._on_demand_idle_timeouts.get(model_id, 60)
-            if self._on_demand_idle_task is not None:
-                self._on_demand_idle_task.cancel()
-            self._on_demand_idle_task = asyncio.create_task(self._idle_unload(model_id, timeout))
+            old_task = self._on_demand_idle_tasks.pop(model_id, None)
+            if old_task is not None:
+                old_task.cancel()
+            self._on_demand_idle_tasks[model_id] = asyncio.create_task(
+                self._idle_unload(model_id, timeout)
+            )
 
     async def _idle_unload(self, model_id: str, timeout: int) -> None:
         """Unload an on-demand model after it has been idle.
@@ -453,6 +465,6 @@ class ModelRegistry:
             handler = self._handlers.pop(model_id)
             if hasattr(handler, "cleanup"):
                 await handler.cleanup()
-            if self._on_demand_loaded == model_id:
-                self._on_demand_loaded = None
+            self._on_demand_loaded.discard(model_id)
+            self._on_demand_idle_tasks.pop(model_id, None)
             logger.info(f"Unloaded idle on-demand model '{model_id}'")
