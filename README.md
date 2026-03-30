@@ -28,6 +28,7 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 - [Frequently Encountered Problems](#frequently-encountered-problems)
 - [Quick Reference Card](#quick-reference-card)
 - [Featured Launch: MiniMax-M2.5-Uncensored-4bit](#featured-launch-minimax-m25-uncensored-4bit)
+- [Featured Launch: GLM-4.7-Flash-Abliterated-8bit](#featured-launch-glm-47-flash-abliterated-8bit)
 - [Contributing](#contributing)
 - [Support](#support)
 
@@ -811,6 +812,31 @@ Once it is running, point your OpenAI client to `http://localhost:8000/v1` and u
 - **4-bit efficiency** for lower memory use and faster local inference
 - **Uncensored behavior** for research, creative, and less-filtered assistant use cases
 - **MiniMax-native parsing** with `minimax_m2` for cleaner reasoning and tool-call handling
+- **Drop-in compatibility** with OpenAI SDKs, OpenWebUI, and agent frameworks
+
+---
+
+## Featured Launch: GLM-4.7-Flash-Abliterated-8bit
+
+Looking for a fast, uncensored reasoning model on Apple Silicon? [mlx-community/glm-4.7-flash-abliterated-8bit](https://huggingface.co/mlx-community/glm-4.7-flash-abliterated-8bit) is an 8-bit quantized MLX conversion of [huihui-ai/Huihui-GLM-4.7-Flash-abliterated](https://huggingface.co/huihui-ai/Huihui-GLM-4.7-Flash-abliterated), offering strong reasoning and tool-calling capabilities with efficient memory usage.
+
+### Launch It in One Command
+
+```bash
+mlx-openai-server launch \
+  --model-path mlx-community/glm-4.7-flash-abliterated-8bit \
+  --reasoning-parser glm47_flash \
+  --tool-call-parser glm4_moe
+```
+
+Once it is running, point your OpenAI client to `http://localhost:8000/v1` and use it like any other chat-completions endpoint.
+
+### Why This Model Stands Out
+
+- **8-bit quantized** for a good balance between quality and memory efficiency on Apple Silicon
+- **Abliterated** — fewer refusals for research, creative, and less-filtered use cases
+- **Built-in reasoning** with dedicated `glm47_flash` parser for chain-of-thought outputs
+- **Tool calling** via `glm4_moe` parser for agent-style workflows
 - **Drop-in compatibility** with OpenAI SDKs, OpenWebUI, and agent frameworks
 
 ---
