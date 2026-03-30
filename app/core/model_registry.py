@@ -386,7 +386,9 @@ class ModelRegistry:
                 if idle_task is not None:
                     idle_task.cancel()
                 old_handler = self._handlers.pop(loaded_id)
-                logger.info(f"Unloading on-demand model '{loaded_id}' to make room for '{model_id}'")
+                logger.info(
+                    f"Unloading on-demand model '{loaded_id}' to make room for '{model_id}'"
+                )
                 if hasattr(old_handler, "cleanup"):
                     await old_handler.cleanup()
                 self._on_demand_ref_count.pop(loaded_id, None)
