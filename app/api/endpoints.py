@@ -11,7 +11,7 @@ import random
 import time
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Form, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 import numpy as np
@@ -2014,104 +2014,9 @@ async def process_multimodal_responses_request(
 
 
 @router.websocket("/v1/responses")
-async def responses_websocket_endpoint(ws: WebSocket) -> None:
-    """Handle Responses API requests over WebSocket (Codex CLI protocol).
-
-    Codex sends a ``response.create`` JSON message after connecting.
-    The server streams back the same events as the SSE endpoint, but as
-    individual JSON text frames.  A ``response.completed`` event signals
-    the end of the response.
-    """
-    await ws.accept()
-    try:
-        # Receive the initial request message
-        raw_message = await ws.receive_text()
-        data = json.loads(raw_message)
-
-        # Handle prewarm requests (generate=false) — acknowledge and close
-        if data.get("generate") is False:
-            await ws.send_text(json.dumps({"type": "response.created", "response": {}}))
-            await ws.close()
-            return
-
-        # Strip the WebSocket envelope field
-        data.pop("type", None)
-
-        request = ResponsesRequest(**data)
-
-        handler = await _resolve_handler(ws, model_id=request.model)
-        if handler is None:
-            await ws.send_text(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "error": {
-                            "message": "Model handler not initialized",
-                            "code": "service_unavailable",
-                        },
-                    }
-                )
-            )
-            await ws.close(code=1011)
-            return
-
-        _normalize_request_model(ws, request, handler)
-
-        handler_type = _get_handler_type(handler)
-        if handler_type not in ("lm", "multimodal"):
-            await ws.send_text(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "error": {
-                            "message": f"Unsupported model type for responses: {handler_type}",
-                            "code": "unsupported_request",
-                        },
-                    }
-                )
-            )
-            await ws.close(code=1011)
-            return
-
-        # Force streaming mode for WebSocket
-        request.stream = True
-        refined_request = refine_responses_request(request, handler)
-        chat_request = convert_responses_request_to_chat_request(refined_request)
-
-        if handler_type == "multimodal":
-            stream_gen = handle_responses_stream_response(
-                handler.generate_multimodal_stream(chat_request),
-                refined_request,
-            )
-        else:
-            stream_gen = handle_responses_stream_response(
-                handler.generate_text_stream(chat_request),
-                refined_request,
-                refined_request.model,
-            )
-
-        # Convert SSE events to WebSocket JSON text frames
-        async for sse_chunk in stream_gen:
-            for line in sse_chunk.strip().split("\n"):
-                if line.startswith("data: "):
-                    await ws.send_text(line[6:])
-
-    except WebSocketDisconnect:
-        logger.debug("WebSocket client disconnected from /v1/responses")
-    except json.JSONDecodeError as e:
-        logger.warning(f"Invalid JSON in WebSocket message: {e}")
-        await ws.close(code=1008, reason="Invalid JSON")
-    except Exception as e:
-        logger.exception(f"Error in WebSocket responses endpoint: {e}")
-        try:
-            await ws.send_text(
-                json.dumps(
-                    {"type": "error", "error": {"message": str(e), "code": "server_error"}}
-                )
-            )
-            await ws.close(code=1011)
-        except Exception:
-            pass
+async def responses_websocket_reject(ws: WebSocket) -> None:
+    """Reject WebSocket upgrades with 426 so clients fall back to HTTP POST."""
+    await ws.close(code=1008, reason="Upgrade Required")
 
 
 @router.post("/v1/responses", response_model=None)
