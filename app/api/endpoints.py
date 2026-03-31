@@ -11,7 +11,7 @@ import random
 import time
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Form, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 import numpy as np
@@ -2011,13 +2011,6 @@ async def process_multimodal_responses_request(
     usage = result.get("usage")
     final_response = format_final_responses_response(response_data, refined_request, usage)
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
-
-
-@router.websocket("/v1/responses")
-async def responses_websocket_reject(ws: WebSocket) -> None:
-    """Reject WebSocket upgrades with 426 so clients fall back to HTTP POST."""
-    await ws.close(code=1008, reason="Upgrade Required")
-
 
 @router.post("/v1/responses", response_model=None)
 async def responses_endpoint(
