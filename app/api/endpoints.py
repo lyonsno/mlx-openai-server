@@ -2012,6 +2012,7 @@ async def process_multimodal_responses_request(
     final_response = format_final_responses_response(response_data, refined_request, usage)
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
+
 @router.post("/v1/responses", response_model=None)
 async def responses_endpoint(
     request: ResponsesRequest, raw_request: Request
