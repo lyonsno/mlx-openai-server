@@ -1416,9 +1416,7 @@ def _process_responses_item(
     if item_type in {"input_text", "text"}:
         text = item.get("text")
         if text:
-            pending_user_parts.append(
-                ChatCompletionContentPartText(type="text", text=str(text))
-            )
+            pending_user_parts.append(ChatCompletionContentPartText(type="text", text=str(text)))
     elif item_type in {"input_image", "image_url"} and item.get("image_url"):
         pending_user_parts.append(
             ChatCompletionContentPartImage(
@@ -1459,8 +1457,12 @@ def convert_responses_request_to_chat_request(request: ResponsesRequest) -> Chat
             if not item:
                 continue
             _process_responses_item(
-                item, chat_messages, pending_tool_calls, pending_user_parts,
-                flush_pending_user_parts, flush_pending_tool_calls,
+                item,
+                chat_messages,
+                pending_tool_calls,
+                pending_user_parts,
+                flush_pending_user_parts,
+                flush_pending_tool_calls,
             )
 
         flush_pending_tool_calls()
