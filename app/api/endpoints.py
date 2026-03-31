@@ -1730,7 +1730,8 @@ async def handle_responses_stream_response(  # noqa: C901
     usage_info = None
     # track pending tool-call streams keyed by tool_call_index
     tool_call_output_indices: dict[int, int] = {}  # tool_call_index → output_index
-    tool_call_ids: dict[int, str] = {}  # tool_call_index → call item id
+    tool_call_ids: dict[int, str] = {}  # tool_call_index → item id (fc_...)
+    tool_call_call_ids: dict[int, str] = {}  # tool_call_index → call_id (call_...)
     tool_call_names: dict[int, str] = {}
     tool_call_args: dict[int, str] = {}
     msg_item_opened = False
@@ -1811,6 +1812,7 @@ async def handle_responses_stream_response(  # noqa: C901
                         output_index += 1
                         tool_call_output_indices[tc_index] = tc_out_idx
                         tool_call_ids[tc_index] = tc_item_id
+                        tool_call_call_ids[tc_index] = tc_call_id
                         tool_call_names[tc_index] = chunk.get("name", "")
                         tool_call_args[tc_index] = ""
                         yield (
@@ -1850,10 +1852,14 @@ async def handle_responses_stream_response(  # noqa: C901
             )
             yield (
                 f"event: response.output_item.done\n"
-                f"data: {json.dumps({'item': {'id': tc_item_id, 'name': tool_call_names.get(tc_index, ''), 'arguments': full_args, 'type': 'function_call', 'status': 'completed'}, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.output_item.done'})}\n\n"
+                f"data: {json.dumps({'item': {'id': tc_item_id, 'call_id': tool_call_call_ids.get(tc_index, ''), 'name': tool_call_names.get(tc_index, ''), 'arguments': full_args, 'type': 'function_call', 'status': 'completed'}, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.output_item.done'})}\n\n"
             )
 
         # ── Close message item (text) ──────────────────────────────────────
+        # Skip empty/whitespace-only text when tool calls were emitted —
+        # models sometimes generate trailing whitespace alongside tool calls.
+        if msg_item_opened and tool_call_output_indices and not full_text.strip():
+            msg_item_opened = False
         if msg_item_opened:
             yield (
                 f"event: response.output_text.done\n"
@@ -1888,6 +1894,7 @@ async def handle_responses_stream_response(  # noqa: C901
                 tc_out_idx,
                 {
                     "id": tool_call_ids[tc_index],
+                    "call_id": tool_call_call_ids.get(tc_index, ""),
                     "name": tool_call_names.get(tc_index, ""),
                     "arguments": tool_call_args.get(tc_index, ""),
                     "type": "function_call",
