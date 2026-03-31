@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from http import HTTPStatus
 import json
 import os
@@ -1307,6 +1307,127 @@ def _convert_responses_tool_choice(tool_choice: Any) -> Any:
     return "auto"
 
 
+def _process_responses_item(
+    item: dict[str, Any],
+    chat_messages: list[Message],
+    pending_tool_calls: list[ChatCompletionMessageToolCall],
+    pending_user_parts: list[ChatCompletionContentPartText | ChatCompletionContentPartImage],
+    flush_pending_user_parts: Callable[[], None],
+    flush_pending_tool_calls: Callable[[], None],
+) -> None:
+    """Process a single normalized Responses API input item into chat messages."""
+    item_type = item.get("type")
+
+    if item_type == "function_call":
+        flush_pending_user_parts()
+        pending_tool_calls.append(
+            ChatCompletionMessageToolCall(
+                id=item.get("call_id") or get_tool_call_id(),
+                type="function",
+                function=FunctionCall(
+                    name=item.get("name", ""),
+                    arguments=item.get("arguments", "{}"),
+                ),
+            )
+        )
+        return
+
+    # When an assistant message immediately follows pending tool
+    # calls, merge them into a single assistant message so the
+    # subsequent tool-role message has a valid preceding tool_call.
+    if pending_tool_calls and item.get("role") == "assistant":
+        flush_pending_user_parts()
+        chat_messages.append(
+            Message(
+                role="assistant",
+                content=_convert_responses_content("assistant", item.get("content", "")),
+                tool_calls=list(pending_tool_calls),
+            )
+        )
+        pending_tool_calls.clear()
+        return
+
+    flush_pending_tool_calls()
+
+    if item_type == "function_call_output":
+        flush_pending_user_parts()
+        chat_messages.append(
+            Message(
+                role="tool",
+                tool_call_id=item.get("call_id"),
+                content=_serialize_responses_tool_output(item.get("output", "")),
+            )
+        )
+        return
+
+    if item_type in (
+        "reasoning",
+        "compaction",
+        "compaction_summary",
+        "web_search_call",
+        "image_generation_call",
+    ):
+        # Skip non-dialogue items: reasoning metadata, compaction
+        # summaries, and server-side tool invocations.
+        flush_pending_user_parts()
+        return
+
+    if item_type == "custom_tool_call":
+        # Codex freeform tools (e.g. apply_patch) — map to function call
+        flush_pending_user_parts()
+        pending_tool_calls.append(
+            ChatCompletionMessageToolCall(
+                id=item.get("call_id") or get_tool_call_id(),
+                type="function",
+                function=FunctionCall(
+                    name=item.get("name", ""),
+                    arguments=item.get("input", "{}"),
+                ),
+            )
+        )
+        return
+
+    if item_type == "custom_tool_call_output":
+        flush_pending_tool_calls()
+        flush_pending_user_parts()
+        chat_messages.append(
+            Message(
+                role="tool",
+                tool_call_id=item.get("call_id"),
+                content=_serialize_responses_tool_output(item.get("output", "")),
+            )
+        )
+        return
+
+    role = item.get("role")
+    if role:
+        flush_pending_user_parts()
+        mapped_role = "system" if role == "developer" else role
+        if mapped_role not in {"system", "user", "assistant", "tool"}:
+            mapped_role = "user"
+        chat_messages.append(
+            Message(
+                role=mapped_role,
+                content=_convert_responses_content(mapped_role, item.get("content", "")),
+            )
+        )
+        return
+
+    if item_type in {"input_text", "text"}:
+        text = item.get("text")
+        if text:
+            pending_user_parts.append(
+                ChatCompletionContentPartText(type="text", text=str(text))
+            )
+    elif item_type in {"input_image", "image_url"} and item.get("image_url"):
+        pending_user_parts.append(
+            ChatCompletionContentPartImage(
+                type="image_url",
+                image_url=ImageURL(url=str(item["image_url"])),
+            )
+        )
+
+
 def convert_responses_request_to_chat_request(request: ResponsesRequest) -> ChatCompletionRequest:
     """Convert a Responses request into a ChatCompletionRequest with full turn history."""
     chat_messages: list[Message] = []
@@ -1337,118 +1458,10 @@ def convert_responses_request_to_chat_request(request: ResponsesRequest) -> Chat
             item = _normalize_responses_item(raw_item)
             if not item:
                 continue
-
-            item_type = item.get("type")
-            if item_type == "function_call":
-                flush_pending_user_parts()
-                pending_tool_calls.append(
-                    ChatCompletionMessageToolCall(
-                        id=item.get("call_id") or get_tool_call_id(),
-                        type="function",
-                        function=FunctionCall(
-                            name=item.get("name", ""),
-                            arguments=item.get("arguments", "{}"),
-                        ),
-                    )
-                )
-                continue
-
-            # When an assistant message immediately follows pending tool
-            # calls, merge them into a single assistant message so the
-            # subsequent tool-role message has a valid preceding tool_call.
-            if pending_tool_calls and item.get("role") == "assistant":
-                flush_pending_user_parts()
-                chat_messages.append(
-                    Message(
-                        role="assistant",
-                        content=_convert_responses_content(
-                            "assistant", item.get("content", "")
-                        ),
-                        tool_calls=list(pending_tool_calls),
-                    )
-                )
-                pending_tool_calls.clear()
-                continue
-
-            flush_pending_tool_calls()
-
-            if item_type == "function_call_output":
-                flush_pending_user_parts()
-                chat_messages.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=item.get("call_id"),
-                        content=_serialize_responses_tool_output(item.get("output", "")),
-                    )
-                )
-                continue
-
-            if item_type in (
-                "reasoning",
-                "compaction",
-                "compaction_summary",
-                "web_search_call",
-                "image_generation_call",
-            ):
-                # Skip non-dialogue items: reasoning metadata, compaction
-                # summaries, and server-side tool invocations.
-                flush_pending_user_parts()
-                continue
-
-            if item_type == "custom_tool_call":
-                # Codex freeform tools (e.g. apply_patch) — map to function call
-                flush_pending_user_parts()
-                pending_tool_calls.append(
-                    ChatCompletionMessageToolCall(
-                        id=item.get("call_id") or get_tool_call_id(),
-                        type="function",
-                        function=FunctionCall(
-                            name=item.get("name", ""),
-                            arguments=item.get("input", "{}"),
-                        ),
-                    )
-                )
-                continue
-
-            if item_type == "custom_tool_call_output":
-                flush_pending_tool_calls()
-                flush_pending_user_parts()
-                chat_messages.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=item.get("call_id"),
-                        content=_serialize_responses_tool_output(item.get("output", "")),
-                    )
-                )
-                continue
-
-            role = item.get("role")
-            if role:
-                flush_pending_user_parts()
-                mapped_role = "system" if role == "developer" else role
-                if mapped_role not in {"system", "user", "assistant", "tool"}:
-                    mapped_role = "user"
-                chat_messages.append(
-                    Message(
-                        role=mapped_role,
-                        content=_convert_responses_content(mapped_role, item.get("content", "")),
-                    )
-                )
-                continue
-
-            if item_type in {"input_text", "text"}:
-                text = item.get("text")
-                if text:
-                    pending_user_parts.append(
-                        ChatCompletionContentPartText(type="text", text=str(text))
-                    )
-            elif item_type in {"input_image", "image_url"} and item.get("image_url"):
-                pending_user_parts.append(
-                    ChatCompletionContentPartImage(
-                        type="image_url",
-                        image_url=ImageURL(url=str(item["image_url"])),
-                    )
-                )
+            _process_responses_item(
+                item, chat_messages, pending_tool_calls, pending_user_parts,
+                flush_pending_user_parts, flush_pending_tool_calls,
+            )
 
         flush_pending_tool_calls()
         flush_pending_user_parts()
