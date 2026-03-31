@@ -1366,10 +1366,43 @@ def convert_responses_request_to_chat_request(request: ResponsesRequest) -> Chat
                 )
                 continue
 
-            if item_type == "reasoning":
-                # Do not re-inject prior hidden reasoning into prompt history.
-                # Responses reasoning items are output metadata, not dialogue turns.
+            if item_type in (
+                "reasoning",
+                "compaction",
+                "compaction_summary",
+                "web_search_call",
+                "image_generation_call",
+            ):
+                # Skip non-dialogue items: reasoning metadata, compaction
+                # summaries, and server-side tool invocations.
                 flush_pending_user_parts()
+                continue
+
+            if item_type == "custom_tool_call":
+                # Codex freeform tools (e.g. apply_patch) — map to function call
+                flush_pending_user_parts()
+                pending_tool_calls.append(
+                    ChatCompletionMessageToolCall(
+                        id=item.get("call_id") or get_tool_call_id(),
+                        type="function",
+                        function=FunctionCall(
+                            name=item.get("name", ""),
+                            arguments=item.get("input", "{}"),
+                        ),
+                    )
+                )
+                continue
+
+            if item_type == "custom_tool_call_output":
+                flush_pending_tool_calls()
+                flush_pending_user_parts()
+                chat_messages.append(
+                    Message(
+                        role="tool",
+                        tool_call_id=item.get("call_id"),
+                        content=_serialize_responses_tool_output(item.get("output", "")),
+                    )
+                )
                 continue
 
             role = item.get("role")
