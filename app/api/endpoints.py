@@ -1353,6 +1353,23 @@ def convert_responses_request_to_chat_request(request: ResponsesRequest) -> Chat
                 )
                 continue
 
+            # When an assistant message immediately follows pending tool
+            # calls, merge them into a single assistant message so the
+            # subsequent tool-role message has a valid preceding tool_call.
+            if pending_tool_calls and item.get("role") == "assistant":
+                flush_pending_user_parts()
+                chat_messages.append(
+                    Message(
+                        role="assistant",
+                        content=_convert_responses_content(
+                            "assistant", item.get("content", "")
+                        ),
+                        tool_calls=list(pending_tool_calls),
+                    )
+                )
+                pending_tool_calls.clear()
+                continue
+
             flush_pending_tool_calls()
 
             if item_type == "function_call_output":
