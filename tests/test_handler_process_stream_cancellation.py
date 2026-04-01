@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import Mock
 
 from fastapi import HTTPException
 import pytest
@@ -25,6 +26,14 @@ class _CaptureQueue:
         self.items.append(item)
 
 
+def _make_fake_process() -> Mock:
+    """Return a mock that satisfies ``_ensure_alive``."""
+    proc = Mock()
+    proc.is_alive.return_value = True
+    proc.exitcode = None
+    return proc
+
+
 @pytest.mark.asyncio
 async def test_call_stream_does_not_enqueue_cancel_after_normal_completion(
     monkeypatch: pytest.MonkeyPatch,
@@ -44,8 +53,8 @@ async def test_call_stream_does_not_enqueue_cancel_after_normal_completion(
     )
     proxy._request_queue = _CaptureQueue()  # type: ignore[assignment]
     proxy._control_queue = _CaptureQueue()  # type: ignore[assignment]
+    proxy._process = _make_fake_process()
     proxy._rpc_timeout = 1.0
-    proxy._stream_queue_size = 4
 
     req_id = "req-stream-ok"
     monkeypatch.setattr(handler_process_module.uuid, "uuid4", lambda: req_id)
@@ -83,8 +92,8 @@ async def test_call_stream_does_not_enqueue_cancel_after_terminal_error(
     )
     proxy._request_queue = _CaptureQueue()  # type: ignore[assignment]
     proxy._control_queue = _CaptureQueue()  # type: ignore[assignment]
+    proxy._process = _make_fake_process()
     proxy._rpc_timeout = 1.0
-    proxy._stream_queue_size = 4
 
     req_id = "req-stream-error"
     monkeypatch.setattr(handler_process_module.uuid, "uuid4", lambda: req_id)
@@ -132,8 +141,8 @@ async def test_call_stream_enqueues_cancel_once_after_early_disconnect(
     )
     proxy._request_queue = _CaptureQueue()  # type: ignore[assignment]
     proxy._control_queue = _CaptureQueue()  # type: ignore[assignment]
+    proxy._process = _make_fake_process()
     proxy._rpc_timeout = 1.0
-    proxy._stream_queue_size = 4
 
     req_id = "req-stream-disconnect"
     monkeypatch.setattr(handler_process_module.uuid, "uuid4", lambda: req_id)

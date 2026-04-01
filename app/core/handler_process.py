@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
-import concurrent.futures
 from contextlib import suppress
 import multiprocessing as mp
 import os
@@ -169,6 +168,11 @@ def _handler_worker(
     # process that called ``Process.start()``.
     _parent_pid = os.getppid()
 
+    # Throttle expensive gc.collect() + mx.clear_cache() to run at most
+    # once every _GC_INTERVAL_SECONDS instead of after every request.
+    _GC_INTERVAL_SECONDS = 5.0
+    _gc_state = {"last_time": 0.0}
+
     # Request IDs cancelled by the parent (e.g. client disconnect).
     # A dedicated thread drains control_queue and adds ids here so the
     # request loop can stop forwarding streaming chunks.
@@ -286,8 +290,11 @@ def _handler_worker(
                     }
                 )
 
-            gc.collect()
-            mx.clear_cache()
+            now = time.monotonic()
+            if now - _gc_state["last_time"] >= _GC_INTERVAL_SECONDS:
+                gc.collect()
+                mx.clear_cache()
+                _gc_state["last_time"] = now
 
         # Final cleanup
         gc.collect()
@@ -391,9 +398,13 @@ class HandlerProcessProxy:
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # RPC timeouts and streaming backpressure.
+        # RPC timeout for calls to the child process.
         self._rpc_timeout: float = 600.0
-        self._stream_queue_size: int = 64
+
+        # Auto-restart state.
+        self._queue_config: dict[str, Any] | None = None
+        self._restart_lock = asyncio.Lock()
+        self._max_restart_attempts: int = 3
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -416,6 +427,7 @@ class HandlerProcessProxy:
         self._loop = asyncio.get_running_loop()
         self._running = True
         self._rpc_timeout = float(queue_config.get("timeout", 300))
+        self._queue_config = queue_config
 
         # Start the response reader thread.
         self._reader_thread = threading.Thread(
@@ -448,11 +460,7 @@ class HandlerProcessProxy:
 
         try:
             try:
-                response = await asyncio.wait_for(ready_queue.get(), timeout=300)
-            except TimeoutError as exc:
-                raise RuntimeError(
-                    f"Handler process for '{self.served_model_name}' did not become ready within 300 s"
-                ) from exc
+                response = await self._wait_for_ready(ready_queue, timeout=300)
             finally:
                 self._pending.pop("__ready__", None)
 
@@ -470,6 +478,198 @@ class HandlerProcessProxy:
 
         self.model_created = int(time.time())
         logger.info(f"Handler process for '{self.served_model_name}' is ready")
+
+    async def _wait_for_ready(
+        self,
+        ready_queue: asyncio.Queue[dict[str, Any]],
+        timeout: float = 300,
+    ) -> dict[str, Any]:
+        """Wait for the child's ready signal, checking liveness periodically.
+
+        Instead of a single long ``wait_for``, this polls in short
+        intervals so that a child crash (e.g. segfault during model
+        loading) is detected quickly rather than waiting the full
+        timeout.
+
+        Parameters
+        ----------
+        ready_queue : asyncio.Queue
+            Queue that will receive the ready signal from the child.
+        timeout : float
+            Maximum total seconds to wait.
+
+        Returns
+        -------
+        dict[str, Any]
+            The ready response from the child process.
+
+        Raises
+        ------
+        RuntimeError
+            If the child dies or the timeout expires before a ready
+            signal is received.
+        """
+        deadline = time.monotonic() + timeout
+        poll_interval = 2.0
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"Handler process for '{self.served_model_name}' "
+                    f"did not become ready within {timeout:.0f} s"
+                )
+
+            try:
+                return await asyncio.wait_for(
+                    ready_queue.get(),
+                    timeout=min(poll_interval, remaining),
+                )
+            except TimeoutError:
+                # Check if the child process is still alive.
+                if self._process and not self._process.is_alive():
+                    exit_code = self._process.exitcode
+                    raise RuntimeError(
+                        f"Handler process for '{self.served_model_name}' "
+                        f"died during initialization (exit code {exit_code})"
+                    )
+                # Still alive — keep waiting.
+
+    async def _ensure_alive(self) -> None:
+        """Check if the child process is alive; restart it if it crashed.
+
+        Uses an async lock so that concurrent callers don't all try to
+        restart at the same time.
+
+        Raises
+        ------
+        RuntimeError
+            If the child cannot be restarted after
+            ``_max_restart_attempts`` attempts.
+        """
+        if self._process and self._process.is_alive():
+            return
+
+        async with self._restart_lock:
+            # Double-check after acquiring the lock — another caller may
+            # have already restarted the process.
+            if self._process and self._process.is_alive():
+                return
+
+            if not self._queue_config:
+                raise RuntimeError(
+                    f"Handler process for '{self.served_model_name}' is dead "
+                    "and cannot be restarted (never started)"
+                )
+
+            exit_code = self._process.exitcode if self._process else None
+            logger.warning(
+                f"Handler process for '{self.served_model_name}' is dead "
+                f"(exit code {exit_code}); attempting restart"
+            )
+
+            last_error: Exception | None = None
+            for attempt in range(1, self._max_restart_attempts + 1):
+                try:
+                    await self._restart()
+                    logger.info(
+                        f"Handler process for '{self.served_model_name}' "
+                        f"restarted successfully (attempt {attempt})"
+                    )
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    logger.error(
+                        f"Restart attempt {attempt}/{self._max_restart_attempts} "
+                        f"for '{self.served_model_name}' failed: {exc}"
+                    )
+
+            raise RuntimeError(
+                f"Handler process for '{self.served_model_name}' could not be "
+                f"restarted after {self._max_restart_attempts} attempts"
+            ) from last_error
+
+    async def _restart(self) -> None:
+        """Tear down the old child process and spawn a fresh one.
+
+        Cleans up old queues and threads, creates new ones, and calls
+        the same startup sequence as ``start()``.
+        """
+        # Stop the old reader thread.
+        self._running = False
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2)
+
+        # Terminate any lingering process.
+        if self._process and self._process.is_alive():
+            self._process.terminate()
+            try:
+                await asyncio.to_thread(self._process.join, 5)
+            except (OSError, ValueError):
+                pass
+
+        # Fail any in-flight requests with an error so callers don't
+        # hang forever.
+        for req_id, q in list(self._pending.items()):
+            if req_id == "__ready__":
+                continue
+            with suppress(Exception):
+                q.put_nowait(
+                    {
+                        "type": "error",
+                        "error_type": "RuntimeError",
+                        "message": "Handler process crashed; restarting",
+                        "status_code": 503,
+                    }
+                )
+        self._pending.clear()
+
+        # Create fresh queues (old ones may have broken pipes).
+        self._request_queue = self._ctx.Queue()
+        self._response_queue = self._ctx.Queue()
+        self._control_queue = self._ctx.Queue()
+
+        # Re-run the same startup sequence.
+        self._running = True
+        self._reader_thread = threading.Thread(
+            target=self._response_reader,
+            daemon=True,
+            name=f"proxy-reader-{self.served_model_name}",
+        )
+        self._reader_thread.start()
+
+        self._process = self._ctx.Process(
+            target=_handler_worker,
+            args=(
+                self._model_cfg_dict,
+                self._queue_config,
+                self._request_queue,
+                self._response_queue,
+                self._control_queue,
+            ),
+            name=f"handler-{self.served_model_name}",
+        )
+        self._process.start()
+        logger.info(
+            f"Respawned handler process for '{self.served_model_name}' (pid={self._process.pid})"
+        )
+
+        ready_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._pending["__ready__"] = ready_queue
+
+        try:
+            response = await self._wait_for_ready(ready_queue, timeout=300)
+        finally:
+            self._pending.pop("__ready__", None)
+
+        if not response.get("success"):
+            error_msg = response.get("error", "unknown error")
+            raise RuntimeError(
+                f"Handler process for '{self.served_model_name}' "
+                f"failed to initialize on restart: {error_msg}"
+            )
+
+        self.model_created = int(time.time())
 
     def _response_reader(self) -> None:
         """Dedicated thread that reads from the response queue.
@@ -501,10 +701,11 @@ class HandlerProcessProxy:
             pending = self._pending.get(req_id)
             if pending and self._loop:
                 try:
-                    future = asyncio.run_coroutine_threadsafe(pending.put(response), self._loop)
-                    future.result(timeout=60)
-                except concurrent.futures.TimeoutError:
-                    logger.warning(f"Timeout delivering stream chunk for {req_id}")
+                    # Use call_soon_threadsafe + put_nowait to avoid blocking
+                    # the reader thread (which would stall ALL response routing).
+                    # The per-request queues are unbounded; backpressure is
+                    # applied at the child process level instead.
+                    self._loop.call_soon_threadsafe(pending.put_nowait, response)
                 except Exception:
                     if self._running:
                         logger.debug(
@@ -538,6 +739,8 @@ class HandlerProcessProxy:
         fastapi.HTTPException
             When the child reports an error.
         """
+        await self._ensure_alive()
+
         req_id = str(uuid.uuid4())
         result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pending[req_id] = result_queue
@@ -587,8 +790,10 @@ class HandlerProcessProxy:
         fastapi.HTTPException
             When the child reports an error.
         """
+        await self._ensure_alive()
+
         req_id = str(uuid.uuid4())
-        result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._stream_queue_size)
+        result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pending[req_id] = result_queue
         stream_completed = False
 
@@ -626,6 +831,10 @@ class HandlerProcessProxy:
     def _raise_remote_error(response: dict[str, Any]) -> None:
         """Reconstruct and raise an error received from the child process.
 
+        Preserves the original ``error_type`` from the child in the
+        raised exception so that callers and log messages can
+        distinguish between different failure modes.
+
         Parameters
         ----------
         response : dict[str, Any]
@@ -634,7 +843,8 @@ class HandlerProcessProxy:
         Raises
         ------
         fastapi.HTTPException
-            Always raised with status code and detail from the response.
+            Raised with status code, detail, and original error type
+            from the child process.
         """
         from fastapi import HTTPException
 
@@ -642,7 +852,17 @@ class HandlerProcessProxy:
         detail = response.get("detail") or response.get(
             "message", "Unknown error in handler subprocess"
         )
-        raise HTTPException(status_code=status_code, detail=detail)
+        error_type = response.get("error_type", "Exception")
+        message = response.get("message", "")
+
+        if error_type != "HTTPException" and message:
+            logger.warning(f"Handler subprocess error ({error_type}): {message}")
+
+        exc = HTTPException(status_code=status_code, detail=detail)
+        # Attach original error metadata for callers that need it.
+        exc.original_error_type = error_type  # type: ignore[attr-defined]
+        exc.original_message = message  # type: ignore[attr-defined]
+        raise exc
 
     # ------------------------------------------------------------------
     # File pre-processing helpers (for non-picklable UploadFile args)
