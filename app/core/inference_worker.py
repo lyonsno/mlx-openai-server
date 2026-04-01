@@ -117,11 +117,15 @@ class InferenceWorker:
         """Run func on the worker thread; yield its generator items asynchronously. Raises QueueFull or func's exception."""
         loop = asyncio.get_running_loop()
         token_queue: asyncio.Queue[Any] = asyncio.Queue()
+        cancel_event = threading.Event()
 
         def _work() -> None:
             try:
                 gen = func(*args, **kwargs)
                 for item in gen:
+                    if cancel_event.is_set():
+                        logger.info("Inference generation cancelled (client disconnect)")
+                        break
                     loop.call_soon_threadsafe(token_queue.put_nowait, item)
                 loop.call_soon_threadsafe(token_queue.put_nowait, _SENTINEL)
                 self._record(True)
@@ -133,17 +137,22 @@ class InferenceWorker:
             self._work_queue.put_nowait(_work)
         except queue.Full:
             raise asyncio.QueueFull("Inference queue is full")
-        return self._read_stream(token_queue)
+        return self._read_stream(token_queue, cancel_event)
 
     @staticmethod
-    async def _read_stream(q: asyncio.Queue[Any]) -> AsyncGenerator[Any, None]:
-        while True:
-            item = await q.get()
-            if item is _SENTINEL:
-                break
-            if isinstance(item, BaseException):
-                raise item
-            yield item
+    async def _read_stream(
+        q: asyncio.Queue[Any], cancel_event: threading.Event
+    ) -> AsyncGenerator[Any, None]:
+        try:
+            while True:
+                item = await q.get()
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            cancel_event.set()
 
     def get_stats(self) -> dict[str, Any]:
         """Current queue and worker stats."""
