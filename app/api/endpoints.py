@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from http import HTTPStatus
 import json
 import os
@@ -1307,6 +1307,125 @@ def _convert_responses_tool_choice(tool_choice: Any) -> Any:
     return "auto"
 
 
+def _process_responses_item(
+    item: dict[str, Any],
+    chat_messages: list[Message],
+    pending_tool_calls: list[ChatCompletionMessageToolCall],
+    pending_user_parts: list[ChatCompletionContentPartText | ChatCompletionContentPartImage],
+    flush_pending_user_parts: Callable[[], None],
+    flush_pending_tool_calls: Callable[[], None],
+) -> None:
+    """Process a single normalized Responses API input item into chat messages."""
+    item_type = item.get("type")
+
+    if item_type == "function_call":
+        flush_pending_user_parts()
+        pending_tool_calls.append(
+            ChatCompletionMessageToolCall(
+                id=item.get("call_id") or get_tool_call_id(),
+                type="function",
+                function=FunctionCall(
+                    name=item.get("name", ""),
+                    arguments=item.get("arguments", "{}"),
+                ),
+            )
+        )
+        return
+
+    # When an assistant message immediately follows pending tool
+    # calls, merge them into a single assistant message so the
+    # subsequent tool-role message has a valid preceding tool_call.
+    if pending_tool_calls and item.get("role") == "assistant":
+        flush_pending_user_parts()
+        chat_messages.append(
+            Message(
+                role="assistant",
+                content=_convert_responses_content("assistant", item.get("content", "")),
+                tool_calls=list(pending_tool_calls),
+            )
+        )
+        pending_tool_calls.clear()
+        return
+
+    flush_pending_tool_calls()
+
+    if item_type == "function_call_output":
+        flush_pending_user_parts()
+        chat_messages.append(
+            Message(
+                role="tool",
+                tool_call_id=item.get("call_id"),
+                content=_serialize_responses_tool_output(item.get("output", "")),
+            )
+        )
+        return
+
+    if item_type in (
+        "reasoning",
+        "compaction",
+        "compaction_summary",
+        "web_search_call",
+        "image_generation_call",
+    ):
+        # Skip non-dialogue items: reasoning metadata, compaction
+        # summaries, and server-side tool invocations.
+        flush_pending_user_parts()
+        return
+
+    if item_type == "custom_tool_call":
+        # Codex freeform tools (e.g. apply_patch) — map to function call
+        flush_pending_user_parts()
+        pending_tool_calls.append(
+            ChatCompletionMessageToolCall(
+                id=item.get("call_id") or get_tool_call_id(),
+                type="function",
+                function=FunctionCall(
+                    name=item.get("name", ""),
+                    arguments=item.get("input", "{}"),
+                ),
+            )
+        )
+        return
+
+    if item_type == "custom_tool_call_output":
+        flush_pending_tool_calls()
+        flush_pending_user_parts()
+        chat_messages.append(
+            Message(
+                role="tool",
+                tool_call_id=item.get("call_id"),
+                content=_serialize_responses_tool_output(item.get("output", "")),
+            )
+        )
+        return
+
+    role = item.get("role")
+    if role:
+        flush_pending_user_parts()
+        mapped_role = "system" if role == "developer" else role
+        if mapped_role not in {"system", "user", "assistant", "tool"}:
+            mapped_role = "user"
+        chat_messages.append(
+            Message(
+                role=mapped_role,
+                content=_convert_responses_content(mapped_role, item.get("content", "")),
+            )
+        )
+        return
+
+    if item_type in {"input_text", "text"}:
+        text = item.get("text")
+        if text:
+            pending_user_parts.append(ChatCompletionContentPartText(type="text", text=str(text)))
+    elif item_type in {"input_image", "image_url"} and item.get("image_url"):
+        pending_user_parts.append(
+            ChatCompletionContentPartImage(
+                type="image_url",
+                image_url=ImageURL(url=str(item["image_url"])),
+            )
+        )
+
+
 def convert_responses_request_to_chat_request(request: ResponsesRequest) -> ChatCompletionRequest:
     """Convert a Responses request into a ChatCompletionRequest with full turn history."""
     chat_messages: list[Message] = []
@@ -1337,68 +1456,14 @@ def convert_responses_request_to_chat_request(request: ResponsesRequest) -> Chat
             item = _normalize_responses_item(raw_item)
             if not item:
                 continue
-
-            item_type = item.get("type")
-            if item_type == "function_call":
-                flush_pending_user_parts()
-                pending_tool_calls.append(
-                    ChatCompletionMessageToolCall(
-                        id=item.get("call_id") or get_tool_call_id(),
-                        type="function",
-                        function=FunctionCall(
-                            name=item.get("name", ""),
-                            arguments=item.get("arguments", "{}"),
-                        ),
-                    )
-                )
-                continue
-
-            flush_pending_tool_calls()
-
-            if item_type == "function_call_output":
-                flush_pending_user_parts()
-                chat_messages.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=item.get("call_id"),
-                        content=_serialize_responses_tool_output(item.get("output", "")),
-                    )
-                )
-                continue
-
-            if item_type == "reasoning":
-                # Do not re-inject prior hidden reasoning into prompt history.
-                # Responses reasoning items are output metadata, not dialogue turns.
-                flush_pending_user_parts()
-                continue
-
-            role = item.get("role")
-            if role:
-                flush_pending_user_parts()
-                mapped_role = "system" if role == "developer" else role
-                if mapped_role not in {"system", "user", "assistant", "tool"}:
-                    mapped_role = "user"
-                chat_messages.append(
-                    Message(
-                        role=mapped_role,
-                        content=_convert_responses_content(mapped_role, item.get("content", "")),
-                    )
-                )
-                continue
-
-            if item_type in {"input_text", "text"}:
-                text = item.get("text")
-                if text:
-                    pending_user_parts.append(
-                        ChatCompletionContentPartText(type="text", text=str(text))
-                    )
-            elif item_type in {"input_image", "image_url"} and item.get("image_url"):
-                pending_user_parts.append(
-                    ChatCompletionContentPartImage(
-                        type="image_url",
-                        image_url=ImageURL(url=str(item["image_url"])),
-                    )
-                )
+            _process_responses_item(
+                item,
+                chat_messages,
+                pending_tool_calls,
+                pending_user_parts,
+                flush_pending_user_parts,
+                flush_pending_tool_calls,
+            )
 
         flush_pending_tool_calls()
         flush_pending_user_parts()
@@ -1697,7 +1762,8 @@ async def handle_responses_stream_response(  # noqa: C901
     usage_info = None
     # track pending tool-call streams keyed by tool_call_index
     tool_call_output_indices: dict[int, int] = {}  # tool_call_index → output_index
-    tool_call_ids: dict[int, str] = {}  # tool_call_index → call item id
+    tool_call_ids: dict[int, str] = {}  # tool_call_index → item id (fc_...)
+    tool_call_call_ids: dict[int, str] = {}  # tool_call_index → call_id (call_...)
     tool_call_names: dict[int, str] = {}
     tool_call_args: dict[int, str] = {}
     msg_item_opened = False
@@ -1778,6 +1844,7 @@ async def handle_responses_stream_response(  # noqa: C901
                         output_index += 1
                         tool_call_output_indices[tc_index] = tc_out_idx
                         tool_call_ids[tc_index] = tc_item_id
+                        tool_call_call_ids[tc_index] = tc_call_id
                         tool_call_names[tc_index] = chunk.get("name", "")
                         tool_call_args[tc_index] = ""
                         yield (
@@ -1817,10 +1884,14 @@ async def handle_responses_stream_response(  # noqa: C901
             )
             yield (
                 f"event: response.output_item.done\n"
-                f"data: {json.dumps({'item': {'id': tc_item_id, 'name': tool_call_names.get(tc_index, ''), 'arguments': full_args, 'type': 'function_call', 'status': 'completed'}, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.output_item.done'})}\n\n"
+                f"data: {json.dumps({'item': {'id': tc_item_id, 'call_id': tool_call_call_ids.get(tc_index, ''), 'name': tool_call_names.get(tc_index, ''), 'arguments': full_args, 'type': 'function_call', 'status': 'completed'}, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.output_item.done'})}\n\n"
             )
 
         # ── Close message item (text) ──────────────────────────────────────
+        # Skip empty/whitespace-only text when tool calls were emitted —
+        # models sometimes generate trailing whitespace alongside tool calls.
+        if msg_item_opened and tool_call_output_indices and not full_text.strip():
+            msg_item_opened = False
         if msg_item_opened:
             yield (
                 f"event: response.output_text.done\n"
@@ -1855,6 +1926,7 @@ async def handle_responses_stream_response(  # noqa: C901
                 tc_out_idx,
                 {
                     "id": tool_call_ids[tc_index],
+                    "call_id": tool_call_call_ids.get(tc_index, ""),
                     "name": tool_call_names.get(tc_index, ""),
                     "arguments": tool_call_args.get(tc_index, ""),
                     "type": "function_call",

@@ -654,11 +654,15 @@ class TranscriptionResponseStream(OpenAIBaseModel):
 
 # --- Responses API Schemas ---
 
-from openai.types.responses import ResponseInputItemParam, ResponseOutputItem, ResponseStatus
+from openai.types.responses import ResponseOutputItem, ResponseStatus
 from openai.types.responses.response import IncompleteDetails, Tool, ToolChoice
 from openai.types.shared import Reasoning
 
-ResponseInputOutputItem: TypeAlias = ResponseInputItemParam | ResponseOutputItem
+# Accept any dict in ``input`` items and ``tools`` so that clients such as
+# OpenAI Codex CLI (which send the full conversation history including
+# custom_tool_call, compaction, reasoning, etc.) are not rejected by strict
+# Pydantic validation against the SDK's narrower TypedDict unions.
+ResponseInputOutputItem: TypeAlias = dict[str, Any]
 
 
 class ResponseTextConfig(OpenAIBaseModel):
@@ -695,7 +699,9 @@ class ResponsesRequest(OpenAIBaseModel):
     )
     seed: int | None = Field(None, description="The seed for the response.")
     text: ResponseTextConfig | None = None
-    tools: list[Tool] | None = Field(None, description="List of tools to use for the response.")
+    tools: list[dict[str, Any]] | None = Field(
+        None, description="List of tools to use for the response."
+    )
     tool_choice: ToolChoice | None = Field(
         default="auto", description="The tool choice to use for the response."
     )
