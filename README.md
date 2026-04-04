@@ -891,3 +891,4 @@ Built on top of:
 ---
 
 [![GitHub stars](https://img.shields.io/github/stars/cubist38/mlx-openai-server?style=social&label=Star)](https://github.com/cubist38/mlx-openai-server)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Huy%20Vuong-blue?logo=linkedin)](https://www.linkedin.com/in/giahuyvuong0859/)
