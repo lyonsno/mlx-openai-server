@@ -108,7 +108,7 @@ class TestNonTrimmableCacheReuse:
         fake_prefix_cache = [Mock(nbytes=100, state=[])]
         fake_full_cache = [Mock(nbytes=200, state=[])]
 
-        cache.insert_cache(prefix_tokens, fake_prefix_cache, checkpoint=True)
+        cache.insert_cache(prefix_tokens, fake_prefix_cache, cache_type="system")
         cache.insert_cache(full_request_1, fake_full_cache)
 
         result_cache, rest = cache.fetch_nearest_cache(full_request_2)
