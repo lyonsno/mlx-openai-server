@@ -122,8 +122,7 @@ class PromptTrie:
                     if best is None or len(extra) < len(best):
                         best = extra
                 elif best is None or len(extra) < len(best):
-                    for tok in current:
-                        stack.append((current[tok], [*extra, tok]))
+                    stack.extend((current[tok], [*extra, tok]) for tok in current)
             if best is not None:
                 longer = tokens[:index] + best
 
@@ -190,13 +189,22 @@ class LRUPromptCache:
             # Fall through to the last queue
             return self._lrus[self._ordering[-1]].popleft()
 
+        @property
+        def ordering(self) -> list[str]:
+            """Return the priority ordering."""
+            return self._ordering
+
+        def count_by_type(self, cache_type: str) -> int:
+            """Return the number of entries of the given type."""
+            return len(self._lrus[cache_type])
+
     def __init__(self, max_size: int = 10, max_bytes: int = 1 << 63) -> None:
         self.max_size = max_size
         self.max_bytes = max_bytes
         self._trie = PromptTrie()
         self._lru = self.CacheOrder()
         self._n_bytes = 0
-        self._n_bytes_by_type: dict[str, int] = dict.fromkeys(self._lru._ordering, 0)
+        self._n_bytes_by_type: dict[str, int] = dict.fromkeys(self._lru.ordering, 0)
 
     def __len__(self) -> int:
         return len(self._lru)
@@ -314,9 +322,9 @@ class LRUPromptCache:
     def stats_by_type(self) -> dict[str, dict[str, int]]:
         """Return per-type sequence count and byte usage."""
         result = {}
-        for cache_type in self._lru._ordering:
+        for cache_type in self._lru.ordering:
             result[cache_type] = {
-                "n_sequences": len(self._lru._lrus[cache_type]),
+                "n_sequences": self._lru.count_by_type(cache_type),
                 "n_bytes": self._n_bytes_by_type[cache_type],
             }
         return result
@@ -333,9 +341,8 @@ class LRUPromptCache:
 if __name__ == "__main__":
     from app.models.mlx_lm import MLX_LM
 
-    model_path = "mlx-community/Qwen3-Coder-Next-8bit"
-    draft_model_path = "mlx-community/Qwen3-Coder-Next-4bit"
-    model = MLX_LM(model_path, draft_model_path)
+    model_path = "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"
+    model = MLX_LM(model_path)
     prompt_cache = LRUPromptCache()
 
     import time
