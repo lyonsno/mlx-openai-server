@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import copy
 from collections import deque
+import copy
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 from mlx_lm.models.cache import can_trim_prompt_cache, trim_prompt_cache
@@ -27,9 +27,9 @@ class PromptTrieResult:
         Length of common prefix with matching cache entries.
     """
 
-    exact: Optional[list[int]]
-    shorter: Optional[list[int]]
-    longer: Optional[list[int]]
+    exact: list[int] | None
+    shorter: list[int] | None
+    longer: list[int] | None
     common_prefix: int
 
 
@@ -196,7 +196,7 @@ class LRUPromptCache:
         self._trie = PromptTrie()
         self._lru = self.CacheOrder()
         self._n_bytes = 0
-        self._n_bytes_by_type: dict[str, int] = {k: 0 for k in self._lru._ordering}
+        self._n_bytes_by_type: dict[str, int] = dict.fromkeys(self._lru._ordering, 0)
 
     def __len__(self) -> int:
         return len(self._lru)
