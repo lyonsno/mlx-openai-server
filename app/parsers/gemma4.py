@@ -132,10 +132,10 @@ def _parse_tool_call_body(body: str) -> dict | None:
 
 
 class Gemma4ReasoningParser(AbstractReasoningParser):
-    """Reasoning parser for Gemma 4 models.
+    r"""Reasoning parser for Gemma 4 models.
 
     Thinking content is wrapped in:
-        <|channel>thought\\n ... <channel|>
+        <|channel>thought\n ... <channel|>
     """
 
     def __init__(
