@@ -13,6 +13,7 @@ from .abstract_parser import (
 )
 from .function_parameter import FunctionParameterToolParser
 from .functiongemma import FunctionGemmaToolParser
+from .gemma4 import Gemma4ReasoningParser, Gemma4ToolParser
 from .glm4_moe import GLM4MoEReasoningParser, GLM4MoEToolParser
 from .harmony import HarmonyParser
 from .hermes import HermesReasoningParser, HermesToolParser
@@ -37,6 +38,7 @@ REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "minimax_m2": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for MiniMax M2
     "nemotron3_nano": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for Nemotron3 Nano
     "solar_open": SolarOpenReasoningParser,
+    "gemma4": Gemma4ReasoningParser,
     "kimi_k2": HermesReasoningParser,
     "mixed_think_tool_handoff": MixedThinkToolHandoffReasoningParser,
     "step_35": Step35ReasoningParser,  # backward-compatible parser with legacy implicit-open behavior
@@ -53,6 +55,7 @@ TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "minimax_m2": MiniMaxM2ToolParser,
     "nemotron3_nano": FunctionParameterToolParser,  # use FunctionParameterToolParser for Nemotron3 Nano
     "functiongemma": FunctionGemmaToolParser,
+    "gemma4": Gemma4ToolParser,
     "iquest_coder_v1": HermesToolParser,  # use HermesToolParser for IQuest Coder V1
     "solar_open": SolarOpenToolParser,
     "longcat_flash_lite": LongCatFlashLiteToolParser,
@@ -309,12 +312,14 @@ __all__ = [
     "Qwen3ReasoningParser",
     "Qwen3MoEReasoningParser",
     "Qwen35ReasoningParser",
+    "Gemma4ReasoningParser",
     "GLM4MoEReasoningParser",
     "SolarOpenReasoningParser",
     "MixedThinkToolHandoffReasoningParser",
     "Step35ReasoningParser",
     # Tool parsers
     "HermesToolParser",
+    "Gemma4ToolParser",
     "GLM4MoEToolParser",
     "MiniMaxM2ToolParser",
     "FunctionGemmaToolParser",
