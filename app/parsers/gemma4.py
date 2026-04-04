@@ -163,9 +163,7 @@ class Gemma4ReasoningParser(AbstractReasoningParser):
             "after_reasoning_close_content": after,
         }
 
-    def extract_reasoning_streaming(
-        self, chunk: str
-    ) -> tuple[dict[str, str] | str | None, bool]:
+    def extract_reasoning_streaming(self, chunk: str) -> tuple[dict[str, str] | str | None, bool]:
         if self.reasoning_open in chunk:
             self.state = ReasoningParserState.FOUND_PREFIX
             start_idx = chunk.find(self.reasoning_open)
@@ -231,9 +229,7 @@ class Gemma4ToolParser(AbstractToolParser):
         <|tool_call>call:func_name{key:<|"|>value<|"|>,num:42}<tool_call|>
     """
 
-    def __init__(
-        self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE
-    ) -> None:
+    def __init__(self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE) -> None:
         super().__init__(tool_open=tool_open, tool_close=tool_close)
         self.tool_call_regex = re.compile(
             re.escape(TOOL_OPEN) + r"(.*?)" + re.escape(TOOL_CLOSE),
