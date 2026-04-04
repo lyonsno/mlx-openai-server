@@ -9,7 +9,21 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 
 ---
 
+## 🎬 Demo: MLX OpenAI Server + Codex
+
+> **See it in action!** A local 27B model powering OpenAI Codex — fully local, fully private, on Apple Silicon.
+
+[![MLX OpenAI Server + Codex: Local 27B Model in Action](https://img.youtube.com/vi/CY5yVS8P5Vg/maxresdefault.jpg)](https://youtu.be/CY5yVS8P5Vg)
+
+**[▶ Watch the demo on YouTube](https://youtu.be/CY5yVS8P5Vg)**
+
+`mlx-openai-server` works as a drop-in local backend for tools like [OpenAI Codex](https://github.com/openai/codex), giving you a fully local AI coding assistant with zero API costs.
+
+---
+
 ## Table of Contents
+
+- [Demo: MLX OpenAI Server + Codex](#-demo-mlx-openai-server--codex)
 
 - [5-Second Quick Start](#5-second-quick-start)
 - [Installation](#installation)
