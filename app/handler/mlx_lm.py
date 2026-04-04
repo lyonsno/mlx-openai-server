@@ -352,7 +352,7 @@ class MLXLMHandler:
                     _store.insert_cache(
                         _prefix_ids,
                         copy.deepcopy(prompt_cache_state),
-                        checkpoint=True,
+                        cache_type="system",
                     )
 
                 logger.info(f"Non-trimmable cache: will checkpoint prefix at {boundary} tokens")
