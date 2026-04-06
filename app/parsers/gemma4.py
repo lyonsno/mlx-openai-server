@@ -12,7 +12,7 @@ from .abstract_parser import (
     _suffix_prefix_overlap,
 )
 
-REASONING_OPEN = "<|channel>thought\n"
+REASONING_OPEN = "<|channel>thought"
 REASONING_CLOSE = "<channel|>"
 
 TOOL_OPEN = "<|tool_call>"
@@ -145,7 +145,7 @@ class Gemma4ReasoningParser(AbstractReasoningParser):
     ) -> None:
         super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
         self.reasoning_regex = re.compile(
-            re.escape(reasoning_open) + r"(.*?)" + re.escape(reasoning_close),
+            re.escape(reasoning_open) + r"\n?(.*?)" + re.escape(reasoning_close),
             re.DOTALL,
         )
 
@@ -167,7 +167,7 @@ class Gemma4ReasoningParser(AbstractReasoningParser):
         if self.reasoning_open in chunk:
             self.state = ReasoningParserState.FOUND_PREFIX
             start_idx = chunk.find(self.reasoning_open)
-            reasoning_content = chunk[start_idx + len(self.reasoning_open) :]
+            reasoning_content = chunk[start_idx + len(self.reasoning_open) :].lstrip("\n")
 
             if self.reasoning_close in reasoning_content:
                 end_idx = reasoning_content.find(self.reasoning_close)
