@@ -12,7 +12,7 @@ from .abstract_parser import (
     _suffix_prefix_overlap,
 )
 
-REASONING_OPEN = "<|channel>thought\n"
+REASONING_OPEN = "<|channel>thought"
 REASONING_CLOSE = "<channel|>"
 
 TOOL_OPEN = "<|tool_call>"
@@ -145,7 +145,7 @@ class Gemma4ReasoningParser(AbstractReasoningParser):
     ) -> None:
         super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
         self.reasoning_regex = re.compile(
-            re.escape(reasoning_open) + r"(.*?)" + re.escape(reasoning_close),
+            re.escape(reasoning_open) + r"\n?(.*?)" + re.escape(reasoning_close),
             re.DOTALL,
         )
 
@@ -164,57 +164,80 @@ class Gemma4ReasoningParser(AbstractReasoningParser):
         }
 
     def extract_reasoning_streaming(self, chunk: str) -> tuple[dict[str, str] | str | None, bool]:
-        if self.reasoning_open in chunk:
-            self.state = ReasoningParserState.FOUND_PREFIX
-            start_idx = chunk.find(self.reasoning_open)
-            reasoning_content = chunk[start_idx + len(self.reasoning_open) :]
-
-            if self.reasoning_close in reasoning_content:
-                end_idx = reasoning_content.find(self.reasoning_close)
-                after = reasoning_content[end_idx + len(self.reasoning_close) :]
-                self.state = ReasoningParserState.NORMAL
-                return {
-                    "reasoning_content": reasoning_content[:end_idx],
-                    "after_reasoning_close_content": after,
-                }, True
-
-            overlap = _suffix_prefix_overlap(reasoning_content, self.reasoning_close)
-            if overlap > 0:
-                emitted = reasoning_content[:-overlap]
-                self.buffer = reasoning_content[-overlap:]
-            else:
-                emitted = reasoning_content
-                self.buffer = ""
-
-            if emitted:
-                return {"reasoning_content": emitted}, False
-            return None, False
-
-        if self.state == ReasoningParserState.FOUND_PREFIX:
+        if self.state == ReasoningParserState.NORMAL:
             combined = self.buffer + chunk
-            if self.reasoning_close in combined:
-                end_idx = combined.find(self.reasoning_close)
-                reasoning_content = combined[:end_idx]
-                after = combined[end_idx + len(self.reasoning_close) :]
-                self.buffer = ""
-                return {
-                    "reasoning_content": reasoning_content,
-                    "after_reasoning_close_content": after,
-                }, True
 
-            overlap = _suffix_prefix_overlap(combined, self.reasoning_close)
+            if self.reasoning_open in combined:
+                self.state = ReasoningParserState.FOUND_PREFIX
+                start_idx = combined.find(self.reasoning_open)
+                before = combined[:start_idx]
+                reasoning_content = combined[start_idx + len(self.reasoning_open) :].lstrip("\n")
+
+                if self.reasoning_close in reasoning_content:
+                    end_idx = reasoning_content.find(self.reasoning_close)
+                    after = reasoning_content[end_idx + len(self.reasoning_close) :]
+                    self.state = ReasoningParserState.NORMAL
+                    self.buffer = ""
+                    result: dict[str, str] = {
+                        "reasoning_content": reasoning_content[:end_idx],
+                        "after_reasoning_close_content": after,
+                    }
+                    if before:
+                        result["content"] = before
+                    return result, True
+
+                overlap = _suffix_prefix_overlap(reasoning_content, self.reasoning_close)
+                if overlap > 0:
+                    emitted = reasoning_content[:-overlap]
+                    self.buffer = reasoning_content[-overlap:]
+                else:
+                    emitted = reasoning_content
+                    self.buffer = ""
+
+                result = {}
+                if before:
+                    result["content"] = before
+                if emitted:
+                    result["reasoning_content"] = emitted
+                return result if result else None, False
+
+            # No full opening tag — check for partial match at end of combined
+            overlap = _suffix_prefix_overlap(combined, self.reasoning_open)
             if overlap > 0:
-                reasoning_content = combined[:-overlap]
+                passthrough = combined[:-overlap]
                 self.buffer = combined[-overlap:]
             else:
-                reasoning_content = combined
+                passthrough = combined
                 self.buffer = ""
 
-            if reasoning_content:
-                return {"reasoning_content": reasoning_content}, False
+            if passthrough:
+                return {"content": passthrough}, False
             return None, False
 
-        return {"content": chunk}, False
+        # FOUND_PREFIX state — inside reasoning content
+        combined = self.buffer + chunk
+        if self.reasoning_close in combined:
+            end_idx = combined.find(self.reasoning_close)
+            reasoning_content = combined[:end_idx]
+            after = combined[end_idx + len(self.reasoning_close) :]
+            self.buffer = ""
+            self.state = ReasoningParserState.NORMAL
+            return {
+                "reasoning_content": reasoning_content,
+                "after_reasoning_close_content": after,
+            }, True
+
+        overlap = _suffix_prefix_overlap(combined, self.reasoning_close)
+        if overlap > 0:
+            reasoning_content = combined[:-overlap]
+            self.buffer = combined[-overlap:]
+        else:
+            reasoning_content = combined
+            self.buffer = ""
+
+        if reasoning_content:
+            return {"reasoning_content": reasoning_content}, False
+        return None, False
 
 
 # ---------------------------------------------------------------------------
