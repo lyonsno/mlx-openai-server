@@ -256,6 +256,9 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
                 trust_remote_code=model_cfg.trust_remote_code,
                 chat_template_file=model_cfg.chat_template_file,
                 debug=model_cfg.debug,
+                kv_bits=model_cfg.kv_bits,
+                kv_group_size=model_cfg.kv_group_size,
+                quantized_kv_start=model_cfg.quantized_kv_start,
             ),
             model_cfg,
         )
@@ -318,6 +321,9 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
             prompt_cache_max_bytes=model_cfg.prompt_cache_max_bytes,
             draft_model_path=model_cfg.draft_model_path,
             num_draft_tokens=model_cfg.num_draft_tokens,
+            kv_bits=model_cfg.kv_bits,
+            kv_group_size=model_cfg.kv_group_size,
+            quantized_kv_start=model_cfg.quantized_kv_start,
         ),
         model_cfg,
     )
