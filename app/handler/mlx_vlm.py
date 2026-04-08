@@ -56,6 +56,9 @@ class MLXVLMHandler:
         trust_remote_code: bool = False,
         chat_template_file: str = None,
         debug: bool = False,
+        kv_bits: int | None = None,
+        kv_group_size: int = 64,
+        quantized_kv_start: int = 0,
     ):
         """
         Initialize the handler with the specified model path.
@@ -70,6 +73,9 @@ class MLXVLMHandler:
             reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...).
             trust_remote_code (bool): Enable trust_remote_code when loading models.
             chat_template_file (str): Path to a custom chat template file.
+            kv_bits (int | None): Number of bits for KV cache quantization. None disables quantization.
+            kv_group_size (int): Group size for KV cache quantization. Default is 64.
+            quantized_kv_start (int): Step to begin using a quantized KV cache. Default is 0.
         """
         self.model_path = model_path
         self.model = MLX_VLM(
@@ -84,6 +90,11 @@ class MLXVLMHandler:
         self.disable_auto_resize = disable_auto_resize
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
+
+        # KV cache quantization settings
+        self.kv_bits = kv_bits
+        self.kv_group_size = kv_group_size
+        self.quantized_kv_start = quantized_kv_start
 
         # Store parser configuration
         self.enable_auto_tool_choice = enable_auto_tool_choice
@@ -179,6 +190,9 @@ class MLXVLMHandler:
             "top_p": request_dict.get("top_p"),
             "schema": request_dict.get("schema"),
             "vision_inputs": vision_inputs,
+            "kv_bits": self.kv_bits,
+            "kv_group_size": self.kv_group_size,
+            "quantized_kv_start": self.quantized_kv_start,
         }
 
         parsers_result = ParserManager.create_parsers(
