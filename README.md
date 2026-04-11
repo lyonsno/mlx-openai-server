@@ -25,9 +25,9 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 
 > **OpenClaw AI Agent powered by Gemma 4 via mlx-openai-server (Zalo Demo)** — Gemma 4 serving as the reasoning + tool-calling backend for an agent, running fully local on Apple Silicon.
 
-[![OpenClaw AI Agent powered by Gemma 4 via mlx-openai-server (Zalo Demo)](https://img.youtube.com/vi/ndXeMav7jFI/maxresdefault.jpg)](https://www.youtube.com/watch?v=ndXeMav7jFI)
+[![OpenClaw AI Agent powered by Gemma 4 via mlx-openai-server (Zalo Demo)](https://img.youtube.com/vi/5MSlDCH37Kc/maxresdefault.jpg)](https://www.youtube.com/watch?v=5MSlDCH37Kc)
 
-**[▶ Watch the demo on YouTube](https://www.youtube.com/watch?v=ndXeMav7jFI)**
+**[▶ Watch the demo on YouTube](https://www.youtube.com/watch?v=5MSlDCH37Kc)**
 
 The agent in the demo is **Brelytics**, an open-source data analyst agent — source code at **[cubist38/openclaw-analyst](https://github.com/cubist38/openclaw-analyst)**.
 
