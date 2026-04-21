@@ -163,6 +163,13 @@ class MLX_VLM:
             "top_p": _get("top_p", DEFAULT_TOP_P),
         }
 
+        # KV cache quantization params
+        kv_bits = kwargs.get("kv_bits")
+        if kv_bits is not None:
+            sampling_params["kv_bits"] = kv_bits
+            sampling_params["kv_group_size"] = kwargs.get("kv_group_size", 64)
+            sampling_params["quantized_kv_start"] = kwargs.get("quantized_kv_start", 0)
+
         model_params.update(sampling_params)
 
         response_generator = stream_generate(

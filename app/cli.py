@@ -272,6 +272,24 @@ def cli():
     type=int,
     help="Number of draft tokens per step when using speculative decoding (--draft-model-path). Only supported with model type 'lm'. Default is 2.",
 )
+@click.option(
+    "--kv-bits",
+    default=None,
+    type=int,
+    help="Number of bits for KV cache quantization (e.g. 4, 8). Reduces memory usage at the cost of some quality. Only works with 'lm' and 'multimodal' model types.",
+)
+@click.option(
+    "--kv-group-size",
+    default=64,
+    type=int,
+    help="Group size for KV cache quantization. Default is 64.",
+)
+@click.option(
+    "--quantized-kv-start",
+    default=0,
+    type=int,
+    help="Step to begin using a quantized KV cache when --kv-bits is set. Default is 0.",
+)
 # Sampling parameters (defaults used when API request omits them)
 @click.option(
     "--max-tokens",
@@ -344,6 +362,9 @@ def launch(
     prompt_cache_max_bytes,
     draft_model_path,
     num_draft_tokens,
+    kv_bits,
+    kv_group_size,
+    quantized_kv_start,
     max_tokens,
     temperature,
     top_p,
@@ -412,6 +433,9 @@ def launch(
         prompt_cache_max_bytes=prompt_cache_max_bytes,
         draft_model_path=draft_model_path,
         num_draft_tokens=num_draft_tokens,
+        kv_bits=kv_bits,
+        kv_group_size=kv_group_size,
+        quantized_kv_start=quantized_kv_start,
         default_max_tokens=max_tokens,
         default_temperature=temperature,
         default_top_p=top_p,

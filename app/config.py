@@ -59,6 +59,11 @@ class MLXServerConfig:
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
 
+    # KV cache quantization
+    kv_bits: int | None = None
+    kv_group_size: int = 64
+    quantized_kv_start: int = 0
+
     # Default sampling parameters (override DEFAULT_* env when set via CLI)
     default_max_tokens: int = 100000
     default_temperature: float = 1.0
@@ -122,6 +127,14 @@ class MLXServerConfig:
             )
             self.config_name = "flux-kontext-dev"
 
+        # KV cache quantization is only supported for lm and multimodal model types
+        if self.kv_bits is not None and self.model_type not in {"lm", "multimodal"}:
+            logger.warning(
+                "KV cache quantization (--kv-bits) is only supported for model types 'lm' and "
+                "'multimodal'. Ignoring KV cache quantization options."
+            )
+            self.kv_bits = None
+
         # Speculative decoding (draft model) is only supported for lm model type
         if self.draft_model_path and self.model_type != "lm":
             logger.warning(
@@ -177,6 +190,9 @@ class MLXServerConfig:
             prompt_cache_max_bytes=self.prompt_cache_max_bytes,
             draft_model_path=self.draft_model_path,
             num_draft_tokens=self.num_draft_tokens,
+            kv_bits=self.kv_bits,
+            kv_group_size=self.kv_group_size,
+            quantized_kv_start=self.quantized_kv_start,
         )
 
 
@@ -233,6 +249,9 @@ class ModelEntryConfig:
     prompt_cache_max_bytes: int = 1 << 63
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
+    kv_bits: int | None = None
+    kv_group_size: int = 64
+    quantized_kv_start: int = 0
     default_max_tokens: int | None = None
     default_temperature: float | None = None
     default_top_p: float | None = None
@@ -270,6 +289,15 @@ class ModelEntryConfig:
                 self.model_path,
             )
             self.config_name = "flux-kontext-dev"
+
+        # KV cache quantization is LM/multimodal-only
+        if self.kv_bits is not None and self.model_type not in {"lm", "multimodal"}:
+            logger.warning(
+                "KV cache quantization is only supported for 'lm' and 'multimodal'. "
+                "Ignoring for model '%s'.",
+                self.model_path,
+            )
+            self.kv_bits = None
 
         # Speculative decoding is LM-only
         if self.draft_model_path and self.model_type != "lm":

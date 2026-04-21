@@ -109,6 +109,9 @@ class MLXLMHandler:
         debug: bool = False,
         prompt_cache_size: int = 10,
         prompt_cache_max_bytes: int = 1 << 63,
+        kv_bits: int | None = None,
+        kv_group_size: int = 64,
+        quantized_kv_start: int = 0,
     ):
         """
         Initialize the handler with the specified model path.
@@ -141,6 +144,12 @@ class MLXLMHandler:
             Maximum number of prompt KV cache entries to store. Default is 10.
         prompt_cache_max_bytes : int
             Maximum total bytes retained by prompt KV caches before eviction.
+        kv_bits : int | None
+            Number of bits for KV cache quantization. None disables quantization.
+        kv_group_size : int
+            Group size for KV cache quantization. Default is 64.
+        quantized_kv_start : int
+            Step to begin using a quantized KV cache. Default is 0.
         """
         self.model_path = model_path
         self.model = MLX_LM(
@@ -154,6 +163,11 @@ class MLXLMHandler:
         )
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
+
+        # KV cache quantization settings
+        self.kv_bits = kv_bits
+        self.kv_group_size = kv_group_size
+        self.quantized_kv_start = quantized_kv_start
 
         # Store parser configuration
         self.enable_auto_tool_choice = enable_auto_tool_choice
@@ -1034,6 +1048,9 @@ class MLXLMHandler:
                 "xtc_threshold": request.xtc_threshold,
                 "logit_bias": request.logit_bias,
                 "chat_template_kwargs": chat_template_kwargs,
+                "kv_bits": self.kv_bits,
+                "kv_group_size": self.kv_group_size,
+                "quantized_kv_start": self.quantized_kv_start,
             }
 
             if request.response_format:

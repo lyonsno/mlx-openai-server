@@ -302,6 +302,10 @@ class MLX_LM:
 
         sampler = make_sampler(**sampler_kwargs)
 
+        kv_bits = kwargs.get("kv_bits")
+        kv_group_size = kwargs.get("kv_group_size", 64)
+        quantized_kv_start = kwargs.get("quantized_kv_start", 0)
+
         stream_response = stream_generate(
             self.model,
             self.tokenizer,
@@ -313,6 +317,9 @@ class MLX_LM:
             prompt_cache=prompt_cache,
             logits_processors=logits_processors,
             prompt_progress_callback=prompt_progress_callback,
+            kv_bits=kv_bits,
+            kv_group_size=kv_group_size,
+            quantized_kv_start=quantized_kv_start,
         )
         if stream:
             return stream_response
